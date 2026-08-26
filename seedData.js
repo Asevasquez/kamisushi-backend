@@ -11,7 +11,7 @@ async function seedDatabase() {
     await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/kamisushi');
     console.log('✅ Conectado a MongoDB');
 
-    // Limpiar solo las colecciones necesarias
+    // Limpiar colecciones
     await Usuario.deleteMany({});
     await Local.deleteMany({});
     await Revision.deleteMany({});
@@ -27,7 +27,9 @@ async function seedDatabase() {
     ]);
     console.log(`✅ ${locales.length} locales creados`);
 
-    // ========== CREAR USUARIOS (unificados) ==========
+    // ========== CREAR USUARIOS ==========
+    // Usamos insertMany para bypasear el hook pre('save') que hashea la contraseña
+    // y así evitar el doble hash
     const usuariosData = [
       {
         nombre: 'Juan Pérez',
@@ -76,17 +78,16 @@ async function seedDatabase() {
       },
     ];
 
-    for (const userData of usuariosData) {
-      await Usuario.create(userData);
-    }
+    // insertMany bypasea los hooks de mongoose (pre save)
+    await Usuario.insertMany(usuariosData);
     console.log(`✅ ${usuariosData.length} usuarios creados`);
 
     // ========== CREAR REVISIONES DE EJEMPLO ==========
     const supervisor = await Usuario.findOne({ email: 'juan.perez@kamisushi.cl' });
-    
+
     for (let i = 0; i < locales.length; i++) {
       const local = locales[i];
-      
+
       const revision = new Revision({
         fechaRevision: new Date(),
         localId: local._id,
@@ -104,38 +105,38 @@ async function seedDatabase() {
             'SC-04': { cumple: true, observacion: '' },
             'SC-05': { cumple: true, observacion: '' },
           },
-          reclamos: []
+          reclamos: [],
         },
         cuartoFrio: {
           respuestas: {
             'CF-01': { cumple: true, observacion: '' },
             'CF-02': { cumple: true, observacion: '' },
             'CF-03': { cumple: false, observacion: 'Temperatura incorrecta' },
-          }
+          },
         },
         cuartoCaliente: {
           respuestas: {
             'CC-01': { cumple: true, observacion: '' },
             'CC-02': { cumple: true, observacion: '' },
             'CC-03': { cumple: true, observacion: '' },
-          }
+          },
         },
         porcentajeTotal: 75 + i * 5,
         categoria: 'BUENO',
         comentariosGenerales: 'Revisión de ejemplo',
       });
-      
+
       await revision.save();
     }
     console.log(`✅ ${locales.length} revisiones de ejemplo creadas`);
 
     console.log('\n🎉 BASE DE DATOS INICIALIZADA CORRECTAMENTE');
     console.log('\n🔑 CREDENCIALES DE PRUEBA:');
-    console.log('   Master:       master@kamisushi.cl / Master123!');
-    console.log('   Gerencia:     gerencia@kamisushi.cl / Gerencia123!');
-    console.log('   Administrador: admin@kamisushi.cl / Admin123!');
-    console.log('   Supervisor:   juan.perez@kamisushi.cl / Supervisor123!');
-    console.log('   Supervisor:   maria.gonzalez@kamisushi.cl / Supervisor123!');
+    console.log('  Master:        master@kamisushi.cl / Master123!');
+    console.log('  Gerencia:      gerencia@kamisushi.cl / Gerencia123!');
+    console.log('  Administrador: admin@kamisushi.cl / Admin123!');
+    console.log('  Supervisor:    juan.perez@kamisushi.cl / Supervisor123!');
+    console.log('  Supervisor:    maria.gonzalez@kamisushi.cl / Supervisor123!');
 
     process.exit(0);
   } catch (error) {
