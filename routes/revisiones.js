@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
 const PDFDocument = require('pdfkit');
+const path = require('path');
+const fs = require('fs');
 const Revision = require('../models/Revision');
 const Local = require('../models/Local');
 const { verifyToken, authorize } = require('../middleware/auth');
@@ -72,12 +74,28 @@ function getTextoPreguntaCC(id) {
   return textos[id] || id;
 }
 
+function getTextoPregunta(id) {
+  if (id.startsWith('SC')) return getTextoPreguntaSC(id);
+  if (id.startsWith('CF')) return getTextoPreguntaCF(id);
+  return getTextoPreguntaCC(id);
+}
+
 function getColorPorcentaje(porcentaje) {
-  if (porcentaje >= 90) return '#4caf50';
+  if (porcentaje >= 95) return '#4caf50';
   if (porcentaje >= 80) return '#2196f3';
   if (porcentaje >= 70) return '#ff9800';
   if (porcentaje >= 60) return '#f44336';
   return '#d32f2f';
+}
+
+// ✅ FIX: Umbrales de categoría corregidos
+function getCategoriaDesPorcentaje(porcentaje) {
+  if (porcentaje === 100) return 'EXCELENTE';
+  if (porcentaje >= 95) return 'MUY BUENO';
+  if (porcentaje >= 80) return 'BUENO';
+  if (porcentaje >= 70) return 'REGULAR';
+  if (porcentaje >= 60) return 'MALO';
+  return 'PÉSIMO';
 }
 
 function getColorCategoria(categoria) {
@@ -87,84 +105,110 @@ function getColorCategoria(categoria) {
     'BUENO': '#2196f3',
     'REGULAR': '#ff9800',
     'MALO': '#f44336',
-    'PESIMO': '#d32f2f'
+    'PÉSIMO': '#d32f2f',
+    'PESIMO': '#d32f2f',
   };
   return colores[categoria] || '#666666';
-}
-
-function getCategoriaTexto(categoria) {
-  const textos = {
-    'EXCELENTE': 'Excelente',
-    'MUY BUENO': 'Muy Bueno',
-    'BUENO': 'Bueno',
-    'REGULAR': 'Regular',
-    'MALO': 'Malo',
-    'PESIMO': 'Pesimo'
-  };
-  return textos[categoria] || categoria || 'Sin categoria';
 }
 
 function formatDate(dateString) {
   if (!dateString) return 'Fecha no disponible';
   try {
-    const date = new Date(dateString);
-    return date.toLocaleDateString('es-CL');
+    return new Date(dateString).toLocaleDateString('es-CL');
   } catch (e) {
     return 'Fecha invalida';
   }
 }
 
-// ==================== GENERACIÓN DE PDF ====================
+// Intenta cargar imagen desde disco (uploads)
+function getImagePath(fotoUrl) {
+  if (!fotoUrl) return null;
+  try {
+    // Las fotos se guardan como /uploads/filename o rutas absolutas
+    const filename = path.basename(fotoUrl);
+    const filePath = path.join(__dirname, '..', 'uploads', filename);
+    if (fs.existsSync(filePath)) return filePath;
+  } catch (e) {}
+  return null;
+}
+
+// Dibuja una imagen en el PDF si existe, retorna la altura usada
+function dibujarImagen(doc, fotoUrl, x, y, maxWidth = 150, maxHeight = 100) {
+  const imgPath = getImagePath(fotoUrl);
+  if (!imgPath) return 0;
+  try {
+    doc.image(imgPath, x, y, { fit: [maxWidth, maxHeight], align: 'center' });
+    return maxHeight + 5;
+  } catch (e) {
+    return 0;
+  }
+}
+
+// Helper: agregar footer en cada página
+function agregarFooter(doc, supervisor, pagina) {
+  const footerY = doc.page.height - 35;
+  doc.save();
+  doc.fontSize(7).fillColor('#aaaaaa');
+  doc.text(
+    `Generado por: ${supervisor} | ${new Date().toLocaleString('es-CL')} | Pagina ${pagina}`,
+    50, footerY, { align: 'center', width: 495 }
+  );
+  doc.restore();
+}
+
+// Helper: verificar espacio y agregar página si necesario
+function checkPageBreak(doc, needed = 80) {
+  if (doc.y > doc.page.height - needed - 50) {
+    doc.addPage();
+    return true;
+  }
+  return false;
+}
+
+// ==================== GENERACIÓN DE PDF MEJORADO ====================
 
 async function generarPDF(res, revision) {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ margin: 50, size: 'A4' });
+    const doc = new PDFDocument({ margin: 50, size: 'A4', autoFirstPage: true });
     const filename = `revision_${revision._id}.pdf`;
-    
+
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
-    
+
     doc.pipe(res);
     doc.font('Helvetica');
-    
+
+    const supervisorNombre = revision.creadoPor || revision.supervisorNombre || 'Sistema';
+
     // ============================================================
-    // HOJA 1: RESUMEN GENERAL (sin reclamos detallados)
+    // PÁGINA 1: RESUMEN GENERAL
     // ============================================================
-    
-    // TITULO
-    doc.fontSize(22)
-       .fillColor('#d32f2f')
-       .text('KAMI SUSHI', { align: 'center' });
-    doc.fontSize(11)
-       .fillColor('#666666')
-       .text('Sistema de Supervision', { align: 'center' });
+
+    // ENCABEZADO
+    doc.fontSize(22).fillColor('#d32f2f').text('KAMI SUSHI', { align: 'center' });
+    doc.fontSize(11).fillColor('#666666').text('Sistema de Supervision', { align: 'center' });
     doc.moveDown(0.5);
-    
-    // LINEA SEPARADORA
+
     doc.strokeColor('#d32f2f').lineWidth(2);
-    doc.moveTo(50, 125).lineTo(545, 125).stroke();
-    doc.moveDown(0.5);
-    
-    // TITULO DEL INFORME
-    doc.fontSize(16)
-       .fillColor('#333333')
-       .text('INFORME DE REVISION', { align: 'center' });
-    doc.fontSize(10)
-       .fillColor('#888888')
-       .text('N°: REV-' + revision._id.toString().slice(-8).toUpperCase(), { align: 'center' });
+    const lineY = doc.y;
+    doc.moveTo(50, lineY).lineTo(545, lineY).stroke();
+    doc.moveDown(0.8);
+
+    doc.fontSize(16).fillColor('#333333').text('INFORME DE REVISION', { align: 'center' });
+    doc.fontSize(10).fillColor('#888888').text('N°: REV-' + revision._id.toString().slice(-8).toUpperCase(), { align: 'center' });
     doc.moveDown(1.5);
-    
-    // ========== INFORMACION GENERAL ==========
+
+    // INFORMACION GENERAL
     doc.fontSize(13).fillColor('#d32f2f').text('INFORMACION GENERAL', { underline: true });
     doc.moveDown(0.5);
-    
+
     const infoItems = [
-      { label: 'Local:', value: revision.localId?.nombre || 'No especificado' },
+      { label: 'Local:', value: revision.localId?.nombre || revision.localNombre || 'No especificado' },
       { label: 'Fecha:', value: formatDate(revision.fechaRevision) },
       { label: 'Supervisor:', value: revision.supervisorNombre || revision.supervisorId?.nombre || 'No especificado' },
       { label: 'Tipo:', value: revision.esBorrador ? 'BORRADOR' : 'FINAL' },
     ];
-    
+
     let yInfo = doc.y;
     doc.fontSize(10).fillColor('#333333');
     infoItems.forEach((item, i) => {
@@ -172,403 +216,408 @@ async function generarPDF(res, revision) {
       doc.text(item.label, 50, yPos, { width: 80 });
       doc.text(item.value, 130, yPos);
     });
-    doc.moveDown(infoItems.length * 0.5 + 1);
-    
-    // ========== CALIFICACION GLOBAL ==========
+    doc.y = yInfo + (infoItems.length * 22) + 10;
+    doc.moveDown(1);
+
+    // CALIFICACION GLOBAL
     doc.fontSize(13).fillColor('#d32f2f').text('CALIFICACION GLOBAL', { underline: true });
     doc.moveDown(0.5);
-    
+
     const porcentaje = revision.porcentajeTotal || 0;
-    const categoria = revision.categoria || 'Sin categoria';
-    const categoriaTexto = getCategoriaTexto(categoria);
+    // ✅ FIX: usar categoria calculada correctamente
+    const categoria = getCategoriaDesPorcentaje(porcentaje);
     const colorCategoria = getColorCategoria(categoria);
-    
+
+    const barY = doc.y;
     const barWidth = Math.max((porcentaje / 100) * 400, 5);
-    doc.rect(50, doc.y, 400, 22).fill('#eeeeee');
-    doc.rect(50, doc.y, barWidth, 22).fill(getColorPorcentaje(porcentaje));
-    doc.fontSize(14).fillColor('#333333').text(porcentaje + '%', 460, doc.y + 3);
-    doc.moveDown(1.2);
-    
+    doc.rect(50, barY, 400, 22).fill('#eeeeee');
+    doc.rect(50, barY, barWidth, 22).fill(getColorPorcentaje(porcentaje));
+    doc.fontSize(14).fillColor('#333333').text(porcentaje.toFixed(1) + '%', 460, barY + 3);
+    doc.y = barY + 30;
+
     doc.fontSize(11).fillColor('#333333').text('Categoria:', 50, doc.y);
-    doc.fontSize(13).fillColor(colorCategoria).text(categoriaTexto, 130, doc.y - 1);
-    doc.moveDown(1.8);
-    
-    // ========== KPIs POR SECCION ==========
+    doc.fontSize(13).fillColor(colorCategoria).text(categoria, 130, doc.y - 1);
+    doc.moveDown(1.5);
+
+    // ✅ FIX: Nota cuando borran reclamos
+    if (revision.borranReclamos === 'Sí' || revision.borranReclamos === 'Si') {
+      doc.rect(50, doc.y, 495, 28).fill('#fff3e0');
+      doc.fontSize(9).fillColor('#e65100')
+        .text('⚠ Servicio al Cliente no evaluado: el local borra reclamos. Puntaje SC asignado: 0%', 58, doc.y - 22, { width: 480 });
+      doc.moveDown(1.2);
+    }
+
+    // KPIs POR SECCION
     doc.fontSize(13).fillColor('#d32f2f').text('KPIS POR SECCION', { underline: true });
     doc.moveDown(0.5);
-    
+
     const secciones = [
       { nombre: 'Servicio al Cliente', data: revision.servicioCliente, peso: '40%' },
       { nombre: 'Cuarto Frio', data: revision.cuartoFrio, peso: '30%' },
-      { nombre: 'Cuarto Caliente', data: revision.cuartoCaliente, peso: '30%' }
+      { nombre: 'Cuarto Caliente', data: revision.cuartoCaliente, peso: '30%' },
     ];
-    
+
     for (const seccion of secciones) {
       const respuestas = seccion.data?.respuestas || {};
       const items = Object.keys(respuestas).length;
       const cumplidos = Object.values(respuestas).filter(v => v.cumple === true).length;
       const porcentajeSeccion = items > 0 ? Math.round((cumplidos / items) * 100) : 0;
       const colorSeccion = getColorPorcentaje(porcentajeSeccion);
-      
-      doc.fontSize(10).fillColor('#333333');
-      doc.text(seccion.nombre + ' (' + seccion.peso + '):', 50, doc.y);
-      doc.fillColor(colorSeccion);
-      doc.text(porcentajeSeccion + '% (' + cumplidos + '/' + items + ')', 250, doc.y - 12);
+
+      const seccionY = doc.y;
+      doc.fontSize(10).fillColor('#333333').text(seccion.nombre + ' (' + seccion.peso + '):', 50, seccionY);
+      doc.fillColor(colorSeccion).text(porcentajeSeccion + '% (' + cumplidos + '/' + items + ')', 250, seccionY);
       doc.moveDown(0.3);
-      
+
       const smallBarWidth = Math.max((porcentajeSeccion / 100) * 200, 2);
-      doc.rect(50, doc.y, 200, 8).fill('#eeeeee');
-      doc.rect(50, doc.y, smallBarWidth, 8).fill(colorSeccion);
-      doc.moveDown(0.8);
+      const kpiBarY = doc.y;
+      doc.rect(50, kpiBarY, 200, 8).fill('#eeeeee');
+      doc.rect(50, kpiBarY, smallBarWidth, 8).fill(colorSeccion);
+      doc.moveDown(0.9);
     }
-    doc.moveDown(1);
-    
-    // ========== ADMINISTRADORES ==========
+    doc.moveDown(0.5);
+
+    // ADMINISTRADORES
     doc.fontSize(13).fillColor('#d32f2f').text('ADMINISTRADORES', { underline: true });
     doc.moveDown(0.5);
-    
+
     const adminNombre = revision.administrador?.nombre || 'N/A';
     const adminPresente = revision.administrador?.presente ? 'Presente' : 'Ausente';
     const subAdminNombre = revision.subAdministrador?.nombre || 'N/A';
     const subAdminPresente = revision.subAdministrador?.presente ? 'Presente' : 'Ausente';
-    
+
     doc.fontSize(10).fillColor('#333333');
-    doc.text('Administrador: ' + adminNombre, 50, doc.y);
-    doc.text('(' + adminPresente + ')', 230, doc.y - 12);
+    const adminY = doc.y;
+    doc.text('Administrador: ' + adminNombre, 50, adminY);
+    doc.fillColor(revision.administrador?.presente ? '#4caf50' : '#f44336')
+       .text('(' + adminPresente + ')', 250, adminY);
     doc.moveDown(0.6);
-    
-    doc.text('Sub Administrador: ' + subAdminNombre, 50, doc.y);
-    doc.text('(' + subAdminPresente + ')', 230, doc.y - 12);
+
+    const subAdminY = doc.y;
+    doc.fillColor('#333333').text('Sub Administrador: ' + subAdminNombre, 50, subAdminY);
+    doc.fillColor(revision.subAdministrador?.presente ? '#4caf50' : '#f44336')
+       .text('(' + subAdminPresente + ')', 250, subAdminY);
     doc.moveDown(0.6);
-    
-    doc.text('Borran reclamos: ' + (revision.borranReclamos || 'No especificado'), 50, doc.y);
-    doc.moveDown(1.5);
-    
-    // ========== SOLO CONTADOR DE RECLAMOS EN HOJA 1 ==========
+
+    doc.fillColor('#333333').text('Borran reclamos: ' + (revision.borranReclamos || 'No especificado'), 50, doc.y);
+    doc.moveDown(1);
+
+    // RECLAMOS - Resumen en página 1
     const reclamos = revision.servicioCliente?.reclamos || [];
     doc.fontSize(13).fillColor('#d32f2f').text('RECLAMOS', { underline: true });
     doc.moveDown(0.5);
-    
+
     if (reclamos.length > 0) {
-      doc.fontSize(10).fillColor('#d32f2f');
-      doc.text('Total de reclamos registrados: ' + reclamos.length, 50, doc.y);
-      doc.moveDown(0.5);
-      doc.fontSize(9).fillColor('#888888');
-      doc.text('Ver detalle completo en la Hoja 2', 50, doc.y);
+      doc.fontSize(10).fillColor('#d32f2f')
+         .text('Total: ' + reclamos.length + ' reclamo(s) registrado(s). Ver detalle en pagina siguiente.', 50, doc.y);
     } else {
-      doc.fontSize(10).fillColor('#4caf50');
-      doc.text('No se registraron reclamos', 50, doc.y);
+      doc.fontSize(10).fillColor('#4caf50').text('No se registraron reclamos', 50, doc.y);
     }
-    doc.moveDown(1.5);
-    
-    // ========== COMENTARIOS GENERALES ==========
+    doc.moveDown(1);
+
+    // COMENTARIOS GENERALES
     if (revision.comentariosGenerales) {
       doc.fontSize(13).fillColor('#d32f2f').text('COMENTARIOS GENERALES', { underline: true });
       doc.moveDown(0.5);
       doc.fontSize(10).fillColor('#333333');
-      
-      const comentario = revision.comentariosGenerales;
-      const lines = comentario.split('\n');
+      const lines = revision.comentariosGenerales.split('\n');
       for (const line of lines) {
         if (line.trim()) {
-          doc.text(line.trim(), 50, doc.y, { width: 500 });
-          doc.moveDown(0.2);
+          doc.text(line.trim(), 50, doc.y, { width: 495 });
+          doc.moveDown(0.3);
         }
       }
     }
-    
-    // PIE DE PAGINA - HOJA 1
-    const footerY1 = doc.page.height - 40;
-    doc.fontSize(8).fillColor('#aaaaaa');
-    doc.text(
-      'Generado por: ' + (revision.creadoPor || 'Sistema') + ' | ' + new Date().toLocaleString('es-CL') + ' | Pagina 1',
-      50,
-      footerY1,
-      { align: 'center' }
-    );
-    
+
+    agregarFooter(doc, supervisorNombre, 1);
+
     // ============================================================
-    // HOJA 2: DETALLE DE OBSERVACIONES Y RECLAMOS
+    // PÁGINA 2: DETALLE DE RECLAMOS
     // ============================================================
     doc.addPage();
-    
-    // TITULO HOJA 2
-    doc.fontSize(15).fillColor('#d32f2f').text('DETALLE DE OBSERVACIONES Y RECLAMOS', { align: 'center', underline: true });
-    doc.moveDown(0.5);
-    doc.fontSize(9).fillColor('#888888');
-    doc.text('Este informe detalla todas las observaciones, hallazgos y reclamos de la revision', { align: 'center' });
+    let paginaActual = 2;
+
+    doc.fontSize(15).fillColor('#d32f2f')
+       .text('DETALLE DE RECLAMOS', { align: 'center', underline: true });
+    doc.moveDown(0.3);
+    doc.fontSize(9).fillColor('#888888')
+       .text('Local: ' + (revision.localId?.nombre || revision.localNombre || '—') + ' | Fecha: ' + formatDate(revision.fechaRevision), { align: 'center' });
     doc.moveDown(1);
-    
-    // ===== SECCION 1: OBSERVACIONES POR AREA =====
-    
-    // 1.1 SERVICIO AL CLIENTE
-    const observacionesSC = Object.entries(revision.servicioCliente?.respuestas || {})
-      .filter(([_, v]) => v.cumple === false && v.observacion && v.observacion.trim() !== '');
-    
-    if (observacionesSC.length > 0) {
-      doc.fontSize(12).fillColor('#2196f3').text('SERVICIO AL CLIENTE', { underline: true });
-      doc.moveDown(0.3);
-      
-      for (const [id, respuesta] of observacionesSC) {
-        if (doc.y > 700) {
-          doc.addPage();
-          doc.fontSize(12).fillColor('#2196f3').text('SERVICIO AL CLIENTE (continuacion)', { underline: true });
-          doc.moveDown(0.3);
-        }
-        
-        const yStart = doc.y;
-        doc.rect(45, yStart, 500, 50).stroke('#dddddd');
-        
-        doc.fontSize(9).fillColor('#d32f2f');
-        doc.text(id + ':', 55, yStart + 6);
-        doc.fontSize(8).fillColor('#333333');
-        const textoPregunta = getTextoPreguntaSC(id);
-        doc.text(textoPregunta.substring(0, 70), 55, yStart + 18);
-        
-        if (respuesta.observacion) {
-          doc.fontSize(8).fillColor('#666666');
-          const obs = respuesta.observacion.length > 80 ? respuesta.observacion.substring(0, 80) + '...' : respuesta.observacion;
-          doc.text('Observacion: ' + obs, 55, yStart + 32);
-        }
-        
-        doc.moveDown(1.3);
-      }
-      doc.moveDown(0.5);
-    } else {
-      doc.fontSize(10).fillColor('#4caf50');
-      doc.text('Servicio al Cliente - Sin observaciones pendientes', 50, doc.y);
+
+    if (reclamos.length === 0) {
+      doc.fontSize(11).fillColor('#4caf50')
+         .text('No se registraron reclamos en esta revision.', { align: 'center' });
       doc.moveDown(1);
-    }
-    
-    // 1.2 CUARTO FRIO
-    const observacionesCF = Object.entries(revision.cuartoFrio?.respuestas || {})
-      .filter(([_, v]) => v.cumple === false && v.observacion && v.observacion.trim() !== '');
-    
-    if (observacionesCF.length > 0) {
-      if (doc.y > 650) doc.addPage();
-      
-      doc.fontSize(12).fillColor('#2196f3').text('CUARTO FRIO', { underline: true });
-      doc.moveDown(0.3);
-      
-      for (const [id, respuesta] of observacionesCF) {
-        if (doc.y > 700) {
-          doc.addPage();
-          doc.fontSize(12).fillColor('#2196f3').text('CUARTO FRIO (continuacion)', { underline: true });
-          doc.moveDown(0.3);
-        }
-        
-        const yStart = doc.y;
-        doc.rect(45, yStart, 500, 50).stroke('#dddddd');
-        
-        doc.fontSize(9).fillColor('#d32f2f');
-        doc.text(id + ':', 55, yStart + 6);
-        doc.fontSize(8).fillColor('#333333');
-        const textoPregunta = getTextoPreguntaCF(id);
-        doc.text(textoPregunta.substring(0, 70), 55, yStart + 18);
-        
-        if (respuesta.observacion) {
-          doc.fontSize(8).fillColor('#666666');
-          const obs = respuesta.observacion.length > 80 ? respuesta.observacion.substring(0, 80) + '...' : respuesta.observacion;
-          doc.text('Observacion: ' + obs, 55, yStart + 32);
-        }
-        
-        doc.moveDown(1.3);
-      }
-      doc.moveDown(0.5);
     } else {
-      doc.fontSize(10).fillColor('#4caf50');
-      doc.text('Cuarto Frio - Sin observaciones pendientes', 50, doc.y);
-      doc.moveDown(1);
-    }
-    
-    // 1.3 CUARTO CALIENTE
-    const observacionesCC = Object.entries(revision.cuartoCaliente?.respuestas || {})
-      .filter(([_, v]) => v.cumple === false && v.observacion && v.observacion.trim() !== '');
-    
-    if (observacionesCC.length > 0) {
-      if (doc.y > 650) doc.addPage();
-      
-      doc.fontSize(12).fillColor('#2196f3').text('CUARTO CALIENTE', { underline: true });
-      doc.moveDown(0.3);
-      
-      for (const [id, respuesta] of observacionesCC) {
-        if (doc.y > 700) {
-          doc.addPage();
-          doc.fontSize(12).fillColor('#2196f3').text('CUARTO CALIENTE (continuacion)', { underline: true });
-          doc.moveDown(0.3);
-        }
-        
-        const yStart = doc.y;
-        doc.rect(45, yStart, 500, 50).stroke('#dddddd');
-        
-        doc.fontSize(9).fillColor('#d32f2f');
-        doc.text(id + ':', 55, yStart + 6);
-        doc.fontSize(8).fillColor('#333333');
-        const textoPregunta = getTextoPreguntaCC(id);
-        doc.text(textoPregunta.substring(0, 70), 55, yStart + 18);
-        
-        if (respuesta.observacion) {
-          doc.fontSize(8).fillColor('#666666');
-          const obs = respuesta.observacion.length > 80 ? respuesta.observacion.substring(0, 80) + '...' : respuesta.observacion;
-          doc.text('Observacion: ' + obs, 55, yStart + 32);
-        }
-        
-        doc.moveDown(1.3);
-      }
+      doc.fontSize(10).fillColor('#888888')
+         .text('Total: ' + reclamos.length + ' reclamo(s)', 50, doc.y);
       doc.moveDown(0.5);
-    } else {
-      doc.fontSize(10).fillColor('#4caf50');
-      doc.text('Cuarto Caliente - Sin observaciones pendientes', 50, doc.y);
-      doc.moveDown(1);
-    }
-    
-    // ===== SECCION 2: DETALLE DE RECLAMOS =====
-    // TODOS los reclamos van aquí, en la hoja 2
-    if (reclamos.length > 0) {
-      if (doc.y > 600) doc.addPage();
-      
-      doc.fontSize(12).fillColor('#d32f2f').text('DETALLE DE RECLAMOS', { underline: true });
-      doc.moveDown(0.5);
-      doc.fontSize(9).fillColor('#888888');
-      doc.text('Total: ' + reclamos.length + ' reclamo(s) registrado(s)', 50, doc.y);
-      doc.moveDown(0.5);
-      
+
       for (let i = 0; i < reclamos.length; i++) {
         const reclamo = reclamos[i];
-        if (doc.y > 700) {
+
+        // Calcular altura estimada del bloque (con o sin foto)
+        const tieneFoto = !!reclamo.foto;
+        const alturaBloque = tieneFoto ? 130 : 75;
+
+        if (doc.y > doc.page.height - alturaBloque - 50) {
+          agregarFooter(doc, supervisorNombre, paginaActual);
           doc.addPage();
-          doc.fontSize(12).fillColor('#d32f2f').text('DETALLE DE RECLAMOS (continuacion)', { underline: true });
+          paginaActual++;
+          doc.fontSize(12).fillColor('#d32f2f')
+             .text('DETALLE DE RECLAMOS (continuacion)', { underline: true });
           doc.moveDown(0.5);
         }
-        
-        const yStart = doc.y;
-        doc.rect(45, yStart, 500, 65).fill('#fff5f5').stroke('#d32f2f');
-        
-        doc.fontSize(9).fillColor('#d32f2f');
-        doc.text('Reclamo #' + (i + 1) + ': ' + (reclamo.tipo || 'Sin tipo'), 55, yStart + 8);
-        
-        doc.fontSize(8).fillColor('#333333');
-        let yOffset = 24;
+
+        const reclamoY = doc.y;
+        const reclamoHeight = alturaBloque;
+
+        // Fondo del reclamo
+        doc.rect(45, reclamoY, 505, reclamoHeight).fill('#fff5f5').stroke('#d32f2f');
+
+        // Número y tipo
+        doc.fontSize(10).fillColor('#d32f2f')
+           .text('Reclamo #' + (i + 1) + ': ' + (reclamo.tipo || 'Sin tipo'), 55, reclamoY + 8);
+
+        // Campos del reclamo
+        let offsetY = 24;
         if (reclamo.telefono) {
-          doc.text('Telefono: ' + reclamo.telefono, 55, yStart + yOffset);
-          yOffset += 12;
+          doc.fontSize(8).fillColor('#333333')
+             .text('Telefono: ' + reclamo.telefono, 55, reclamoY + offsetY);
+          offsetY += 14;
+        }
+        if (reclamo.fecha) {
+          doc.fontSize(8).fillColor('#333333')
+             .text('Fecha reclamo: ' + formatDate(reclamo.fecha), 55, reclamoY + offsetY);
+          offsetY += 14;
         }
         if (reclamo.entregoSolucion) {
-          const colorSolucion = reclamo.entregoSolucion === 'Si' ? '#4caf50' : '#d32f2f';
-          doc.fillColor(colorSolucion);
-          doc.text('Solucion: ' + reclamo.entregoSolucion, 55, yStart + yOffset);
-          yOffset += 12;
+          const colorSol = reclamo.entregoSolucion === 'Sí' || reclamo.entregoSolucion === 'Si' ? '#4caf50' : '#d32f2f';
+          doc.fontSize(8).fillColor(colorSol)
+             .text('Entrego solucion: ' + reclamo.entregoSolucion, 55, reclamoY + offsetY);
+          offsetY += 14;
         }
-        if (reclamo.montoCompensacion && reclamo.montoCompensacion !== '0') {
-          doc.fillColor('#333333');
-          doc.text('Monto compensacion: $' + reclamo.montoCompensacion, 55, yStart + yOffset);
+        if (reclamo.montoCompensacion && reclamo.montoCompensacion !== '0' && reclamo.montoCompensacion !== '') {
+          doc.fontSize(8).fillColor('#333333')
+             .text('Monto compensacion: $' + reclamo.montoCompensacion, 55, reclamoY + offsetY);
+          offsetY += 14;
         }
-        
-        doc.moveDown(1.5);
+
+        // Foto del reclamo si existe
+        if (tieneFoto) {
+          const imgX = 350;
+          const imgY = reclamoY + 8;
+          const alturaImg = dibujarImagen(doc, reclamo.foto, imgX, imgY, 140, 90);
+          if (alturaImg === 0) {
+            // Si no se pudo cargar la imagen, mostrar texto
+            doc.fontSize(7).fillColor('#888888')
+               .text('📸 Foto adjunta (no disponible en PDF)', 350, reclamoY + 35);
+          }
+        } else {
+          doc.fontSize(7).fillColor('#aaaaaa')
+             .text('Sin foto', 450, reclamoY + 35);
+        }
+
+        doc.y = reclamoY + reclamoHeight + 8;
       }
     }
-    
-    // ===== SECCION 3: RESUMEN ESTADISTICO =====
-    if (doc.y > 550) doc.addPage();
-    
-    doc.fontSize(14).fillColor('#d32f2f').text('RESUMEN DE OBSERVACIONES', { align: 'center', underline: true });
+
+    agregarFooter(doc, supervisorNombre, paginaActual);
+
+    // ============================================================
+    // PÁGINA 3+: DETALLE DE OBSERVACIONES POR ÁREA
+    // ============================================================
+    doc.addPage();
+    paginaActual++;
+
+    doc.fontSize(15).fillColor('#d32f2f')
+       .text('DETALLE DE OBSERVACIONES', { align: 'center', underline: true });
+    doc.moveDown(0.3);
+    doc.fontSize(9).fillColor('#888888')
+       .text('Se muestran solo las preguntas que NO cumplen con observacion o evidencia fotografica', { align: 'center' });
     doc.moveDown(1);
-    
-    const totalObservaciones = observacionesSC.length + observacionesCF.length + observacionesCC.length;
-    const totalReclamosCount = reclamos.length;
-    
-    // Tabla de resumen
-    const tableData = [
-      { seccion: 'Servicio al Cliente', cantidad: observacionesSC.length },
-      { seccion: 'Cuarto Frio', cantidad: observacionesCF.length },
-      { seccion: 'Cuarto Caliente', cantidad: observacionesCC.length },
-      { seccion: 'Reclamos', cantidad: totalReclamosCount },
-      { seccion: 'TOTAL', cantidad: totalObservaciones + totalReclamosCount },
+
+    // Recopilar TODAS las observaciones de las 3 secciones
+    const todasObservaciones = [
+      ...Object.entries(revision.servicioCliente?.respuestas || {})
+        .filter(([, v]) => v.cumple === false)
+        .map(([id, v]) => ({ id, ...v, seccion: 'Servicio al Cliente', color: '#2196f3' })),
+      ...Object.entries(revision.cuartoFrio?.respuestas || {})
+        .filter(([, v]) => v.cumple === false)
+        .map(([id, v]) => ({ id, ...v, seccion: 'Cuarto Frio', color: '#4caf50' })),
+      ...Object.entries(revision.cuartoCaliente?.respuestas || {})
+        .filter(([, v]) => v.cumple === false)
+        .map(([id, v]) => ({ id, ...v, seccion: 'Cuarto Caliente', color: '#ff9800' })),
     ];
-    
+
+    if (todasObservaciones.length === 0) {
+      doc.fontSize(11).fillColor('#4caf50')
+         .text('¡Excelente! No se registraron incumplimientos.', { align: 'center' });
+      doc.moveDown(1);
+    } else {
+      let seccionActual = '';
+
+      for (const obs of todasObservaciones) {
+        const tieneFotos = obs.fotos && obs.fotos.length > 0;
+        const fotosValidas = tieneFotos ? obs.fotos.filter(f => getImagePath(f)) : [];
+        const alturaEstimada = 55 + (fotosValidas.length > 0 ? 110 : 0);
+
+        // Encabezado de sección cuando cambia
+        if (obs.seccion !== seccionActual) {
+          if (doc.y > doc.page.height - 120) {
+            agregarFooter(doc, supervisorNombre, paginaActual);
+            doc.addPage();
+            paginaActual++;
+          }
+          seccionActual = obs.seccion;
+          doc.fontSize(12).fillColor(obs.color).text(seccionActual.toUpperCase(), { underline: true });
+          doc.moveDown(0.4);
+        }
+
+        if (doc.y > doc.page.height - alturaEstimada - 50) {
+          agregarFooter(doc, supervisorNombre, paginaActual);
+          doc.addPage();
+          paginaActual++;
+          doc.fontSize(10).fillColor(obs.color).text(seccionActual + ' (continuacion)', { underline: true });
+          doc.moveDown(0.4);
+        }
+
+        const obsY = doc.y;
+        const obsHeight = alturaEstimada;
+
+        // Fondo
+        doc.rect(45, obsY, 505, obsHeight).fill('#fafafa').stroke('#dddddd');
+
+        // ID y texto de pregunta
+        doc.fontSize(9).fillColor('#d32f2f').text(obs.id + ':', 55, obsY + 7);
+        doc.fontSize(8).fillColor('#333333')
+           .text(getTextoPregunta(obs.id), 55, obsY + 19, { width: fotosValidas.length > 0 ? 260 : 460 });
+
+        // Observacion
+        if (obs.observacion && obs.observacion.trim()) {
+          const obsTexto = obs.observacion.length > 150 ? obs.observacion.substring(0, 150) + '...' : obs.observacion;
+          doc.fontSize(7).fillColor('#666666')
+             .text('Observacion: ' + obsTexto, 55, obsY + 33, { width: fotosValidas.length > 0 ? 260 : 460 });
+        } else {
+          doc.fontSize(7).fillColor('#aaaaaa').text('Sin observacion escrita', 55, obsY + 33);
+        }
+
+        // Fotos de evidencia
+        if (fotosValidas.length > 0) {
+          let imgX = 330;
+          for (let fi = 0; fi < Math.min(fotosValidas.length, 2); fi++) {
+            dibujarImagen(doc, fotosValidas[fi], imgX, obsY + 5, 100, 80);
+            imgX += 110;
+          }
+          if (obs.fotos.length > 2) {
+            doc.fontSize(7).fillColor('#888888')
+               .text('+' + (obs.fotos.length - 2) + ' foto(s) más', 330, obsY + 88);
+          }
+        }
+
+        doc.y = obsY + obsHeight + 6;
+      }
+    }
+
+    agregarFooter(doc, supervisorNombre, paginaActual);
+
+    // ============================================================
+    // ÚLTIMA PÁGINA: RESUMEN ESTADÍSTICO Y CONCLUSIÓN
+    // ============================================================
+    doc.addPage();
+    paginaActual++;
+
+    doc.fontSize(14).fillColor('#d32f2f')
+       .text('RESUMEN Y CONCLUSION', { align: 'center', underline: true });
+    doc.moveDown(1);
+
+    const observacionesSC = Object.values(revision.servicioCliente?.respuestas || {}).filter(v => v.cumple === false).length;
+    const observacionesCF = Object.values(revision.cuartoFrio?.respuestas || {}).filter(v => v.cumple === false).length;
+    const observacionesCC = Object.values(revision.cuartoCaliente?.respuestas || {}).filter(v => v.cumple === false).length;
+    const totalObservaciones = observacionesSC + observacionesCF + observacionesCC;
+
+    // Tabla resumen
+    const tableData = [
+      { seccion: 'Servicio al Cliente (40%)', obs: observacionesSC, color: '#2196f3' },
+      { seccion: 'Cuarto Frio (30%)', obs: observacionesCF, color: '#4caf50' },
+      { seccion: 'Cuarto Caliente (30%)', obs: observacionesCC, color: '#ff9800' },
+      { seccion: 'Reclamos registrados', obs: reclamos.length, color: '#d32f2f' },
+    ];
+
     let yTabla = doc.y;
-    
-    // Encabezado
-    doc.rect(50, yTabla, 400, 20).fill('#d32f2f');
-    doc.rect(450, yTabla, 80, 20).fill('#d32f2f');
-    doc.fontSize(10).fillColor('#ffffff');
-    doc.text('SECCION', 60, yTabla + 4);
-    doc.text('CANTIDAD', 460, yTabla + 4);
-    yTabla += 20;
-    
-    // Filas
-    const colores = ['#2196f3', '#4caf50', '#ff9800', '#d32f2f', '#333333'];
-    for (let i = 0; i < tableData.length; i++) {
-      const row = tableData[i];
-      const esTotal = i === tableData.length - 1;
-      
-      doc.rect(50, yTabla, 400, 20).fill(esTotal ? '#f0f0f0' : '#fafafa');
-      doc.rect(450, yTabla, 80, 20).fill(esTotal ? '#f0f0f0' : '#fafafa');
-      
-      doc.fillColor('#333333');
-      doc.fontSize(esTotal ? 10 : 9);
-      doc.text(row.seccion, 60, yTabla + 4);
-      
-      doc.fillColor(esTotal ? '#333333' : colores[i]);
-      doc.text(row.cantidad.toString(), 470, yTabla + 4);
+    // Header
+    doc.rect(50, yTabla, 400, 22).fill('#d32f2f');
+    doc.rect(450, yTabla, 80, 22).fill('#d32f2f');
+    doc.fontSize(9).fillColor('#ffffff');
+    doc.text('AREA', 60, yTabla + 5);
+    doc.text('INCUMPLIMIENTOS', 455, yTabla + 5);
+    yTabla += 22;
+
+    for (const row of tableData) {
+      doc.rect(50, yTabla, 400, 20).fill('#fafafa').stroke('#eeeeee');
+      doc.rect(450, yTabla, 80, 20).fill('#fafafa').stroke('#eeeeee');
+      doc.fontSize(9).fillColor('#333333').text(row.seccion, 60, yTabla + 4);
+      doc.fillColor(row.obs > 0 ? row.color : '#4caf50').text(row.obs.toString(), 480, yTabla + 4);
       yTabla += 20;
     }
-    
-    doc.moveDown(1.5);
-    
-    // Grafico de barras
-    doc.fontSize(10).fillColor('#333333');
-    doc.text('Distribucion de observaciones por seccion:', 50, doc.y);
-    doc.moveDown(0.5);
-    
-    const maxCount = Math.max(...tableData.map(t => t.cantidad), 1);
-    const barMaxWidth = 400;
-    const coloresBarra = ['#2196f3', '#4caf50', '#ff9800', '#d32f2f'];
-    
-    for (let i = 0; i < tableData.length - 1; i++) {
-      const row = tableData[i];
-      const barWidth = Math.max((row.cantidad / maxCount) * barMaxWidth, 5);
-      doc.fillColor(coloresBarra[i % coloresBarra.length]);
-      doc.rect(50, doc.y, barWidth, 12).fill();
-      doc.fillColor('#333333');
-      doc.text(row.seccion + ': ' + row.cantidad, barWidth + 60, doc.y + 2);
-      doc.moveDown(0.9);
-    }
-    
-    doc.moveDown(1.5);
-    
-    // CONCLUSION
-    doc.fontSize(11).fillColor('#333333');
-    doc.text('CONCLUSION:', 50, doc.y);
-    doc.moveDown(0.3);
-    
-    const totalProblemas = totalObservaciones + totalReclamosCount;
+
+    // Total
+    doc.rect(50, yTabla, 400, 22).fill('#f0f0f0').stroke('#dddddd');
+    doc.rect(450, yTabla, 80, 22).fill('#f0f0f0').stroke('#dddddd');
+    doc.fontSize(10).fillColor('#333333').text('TOTAL', 60, yTabla + 4);
+    doc.fillColor(totalObservaciones > 0 ? '#d32f2f' : '#4caf50')
+       .text((totalObservaciones + reclamos.length).toString(), 480, yTabla + 4);
+
+    doc.y = yTabla + 40;
+    doc.moveDown(1);
+
+    // ✅ FIX: Conclusión basada en porcentaje real, no en cantidad de problemas
+    doc.fontSize(12).fillColor('#333333').text('CONCLUSION:', 50, doc.y);
+    doc.moveDown(0.4);
+
     let conclusion = '';
-    
-    if (totalProblemas === 0) {
-      conclusion = 'Excelente desempeno. No se registraron observaciones ni reclamos. Mantener el nivel de calidad.';
-    } else if (totalProblemas <= 5) {
-      conclusion = 'Desempeno aceptable. Se recomienda abordar las observaciones detectadas en el proximo periodo. Las areas con observaciones deben recibir retroalimentacion inmediata.';
-    } else if (totalProblemas <= 10) {
-      conclusion = 'Desempeno regular. Es necesario implementar acciones correctivas para las areas con mayor numero de observaciones. Se sugiere una reunion de seguimiento en 15 dias.';
+    let colorConclusion = '#333333';
+
+    if (porcentaje === 100) {
+      conclusion = 'Desempeño EXCELENTE. El local cumple con todos los estandares establecidos. Mantener el nivel de calidad alcanzado.';
+      colorConclusion = '#4caf50';
+    } else if (porcentaje >= 95) {
+      conclusion = 'Desempeño MUY BUENO (' + porcentaje.toFixed(1) + '%). El local cumple con casi todos los estandares. Abordar puntualmente las observaciones detectadas para alcanzar la excelencia.';
+      colorConclusion = '#8bc34a';
+    } else if (porcentaje >= 80) {
+      conclusion = 'Desempeño BUENO (' + porcentaje.toFixed(1) + '%). El local cumple con los estandares principales. Se recomienda trabajar en las areas con incumplimientos para mejorar el puntaje.';
+      colorConclusion = '#2196f3';
+    } else if (porcentaje >= 70) {
+      conclusion = 'Desempeño REGULAR (' + porcentaje.toFixed(1) + '%). Existen areas de mejora significativas. Es necesario implementar acciones correctivas y realizar seguimiento en 15 dias.';
+      colorConclusion = '#ff9800';
+    } else if (porcentaje >= 60) {
+      conclusion = 'Desempeño MALO (' + porcentaje.toFixed(1) + '%). El local presenta multiples incumplimientos. Se requiere un plan de mejora inmediato y capacitacion del equipo.';
+      colorConclusion = '#f44336';
     } else {
-      conclusion = 'Desempeno critico. Se requiere una intervencion inmediata y un plan de mejora estructurado para las areas con multiples incumplimientos. Programar capacitacion urgente.';
+      conclusion = 'Desempeño PESIMO (' + porcentaje.toFixed(1) + '%). Situacion critica. Se requiere intervencion inmediata, revision de procesos y capacitacion urgente del equipo completo.';
+      colorConclusion = '#d32f2f';
     }
-    
-    doc.fontSize(9).fillColor('#666666');
-    doc.text(conclusion, { width: 500, align: 'left' });
-    
-    // PIE DE PAGINA - HOJA 2
-    const footerY2 = doc.page.height - 40;
-    doc.fontSize(8).fillColor('#aaaaaa');
-    doc.text(
-      'Generado por: ' + (revision.creadoPor || 'Sistema') + ' | ' + new Date().toLocaleString('es-CL') + ' | Pagina 2',
-      50,
-      footerY2,
-      { align: 'center' }
-    );
-    
-    // FINALIZAR
+
+    // Caja de conclusión con color según categoría
+    const concY = doc.y;
+    doc.rect(45, concY, 505, 60).fill(colorConclusion + '15').stroke(colorConclusion);
+    doc.fontSize(9).fillColor(colorConclusion)
+       .text(conclusion, 55, concY + 10, { width: 485, align: 'justify' });
+    doc.y = concY + 70;
+    doc.moveDown(1);
+
+    // Firma
+    doc.moveDown(2);
+    doc.strokeColor('#cccccc').lineWidth(1);
+    const firmaY = doc.y;
+    doc.moveTo(150, firmaY).lineTo(400, firmaY).stroke();
+    doc.moveDown(0.3);
+    doc.fontSize(9).fillColor('#666666')
+       .text(revision.supervisorNombre || 'Supervisor', { align: 'center' });
+    doc.fontSize(8).fillColor('#aaaaaa').text('Firma del Supervisor', { align: 'center' });
+
+    agregarFooter(doc, supervisorNombre, paginaActual);
+
     doc.end();
     doc.on('finish', resolve);
     doc.on('error', reject);
@@ -599,11 +648,9 @@ router.get('/estadisticas-por-local', verifyToken, async (req, res) => {
     const now = new Date();
     const inicioMes = new Date(now.getFullYear(), now.getMonth(), 1);
     const finMes = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
-
     query.fechaRevision = { $gte: inicioMes, $lte: finMes };
 
     const revisiones = await Revision.find(query).populate('localId');
-
     const estadisticasPorLocal = {};
 
     revisiones.forEach(rev => {
@@ -613,10 +660,9 @@ router.get('/estadisticas-por-local', verifyToken, async (req, res) => {
           revisiones: [],
           totalRevisiones: 0,
           promedioPorcentaje: 0,
-          localId: rev.localId?._id
+          localId: rev.localId?._id,
         };
       }
-
       estadisticasPorLocal[nombreLocal].revisiones.push({
         id: rev._id,
         fecha: rev.fechaRevision,
@@ -641,11 +687,7 @@ router.get('/estadisticas-por-local', verifyToken, async (req, res) => {
 router.get('/', verifyToken, async (req, res) => {
   try {
     let query = {};
-
-    if (req.user.rol === 'supervisor') {
-      query.supervisorId = req.user.id;
-    }
-
+    if (req.user.rol === 'supervisor') query.supervisorId = req.user.id;
     if (req.user.rol === 'administrador') {
       const localesAsignados = req.user.localesAsignados?.map(l => l._id?.toString() || l) || [];
       if (localesAsignados.length > 0) {
@@ -656,14 +698,13 @@ router.get('/', verifyToken, async (req, res) => {
     }
 
     const revisiones = await Revision.find(query)
-      .populate('localId')
-      .populate('supervisorId')
+      .populate('localId').populate('supervisorId')
       .sort({ fechaRevision: -1 });
 
     const revisionesConNombres = revisiones.map(rev => ({
       ...rev.toObject(),
       localNombre: rev.localId?.nombre || rev.localId,
-      supervisorNombre: rev.supervisorId?.nombre || rev.supervisorNombre
+      supervisorNombre: rev.supervisorId?.nombre || rev.supervisorNombre,
     }));
 
     res.json(revisionesConNombres);
@@ -676,17 +717,14 @@ router.get('/', verifyToken, async (req, res) => {
 router.get('/:id', verifyToken, async (req, res) => {
   try {
     const revision = await Revision.findById(req.params.id)
-      .populate('localId')
-      .populate('supervisorId');
+      .populate('localId').populate('supervisorId');
 
-    if (!revision) {
-      return res.status(404).json({ error: 'Revision no encontrada' });
-    }
+    if (!revision) return res.status(404).json({ error: 'Revision no encontrada' });
 
     const revisionConNombres = {
       ...revision.toObject(),
       localNombre: revision.localId?.nombre || revision.localId,
-      supervisorNombre: revision.supervisorId?.nombre || revision.supervisorNombre
+      supervisorNombre: revision.supervisorId?.nombre || revision.supervisorNombre,
     };
 
     res.json(revisionConNombres);
@@ -699,15 +737,11 @@ router.get('/:id', verifyToken, async (req, res) => {
 router.get('/:id/pdf', verifyToken, async (req, res) => {
   try {
     const revision = await Revision.findById(req.params.id)
-      .populate('localId')
-      .populate('supervisorId');
-    
-    if (!revision) {
-      return res.status(404).json({ error: 'Revision no encontrada' });
-    }
-    
+      .populate('localId').populate('supervisorId');
+
+    if (!revision) return res.status(404).json({ error: 'Revision no encontrada' });
+
     await generarPDF(res, revision);
-    
   } catch (error) {
     console.error('Error generando PDF:', error);
     if (!res.headersSent) {
@@ -719,7 +753,7 @@ router.get('/:id/pdf', verifyToken, async (req, res) => {
 router.post('/borrador', verifyToken, async (req, res) => {
   try {
     let supervisorId = null;
-    let supervisorNombre = req.user.nombre;
+    const supervisorNombre = req.user.nombre;
 
     if (req.user.rol === 'supervisor') {
       supervisorId = req.user.id;
@@ -730,7 +764,7 @@ router.post('/borrador', verifyToken, async (req, res) => {
     const borradorData = {
       ...req.body,
       supervisorId: supervisorId ? new mongoose.Types.ObjectId(supervisorId) : null,
-      supervisorNombre: supervisorNombre,
+      supervisorNombre,
       localId: req.body.localId ? new mongoose.Types.ObjectId(req.body.localId) : null,
       esBorrador: true,
       creadoPor: req.user.nombre,
@@ -738,7 +772,7 @@ router.post('/borrador', verifyToken, async (req, res) => {
       creadoEn: new Date(),
       modificadoPor: req.user.nombre,
       modificadoPorId: req.user.id,
-      modificadoEn: new Date()
+      modificadoEn: new Date(),
     };
 
     const borrador = new Revision(borradorData);
@@ -752,12 +786,12 @@ router.post('/borrador', verifyToken, async (req, res) => {
 
 router.post('/', verifyToken, async (req, res) => {
   try {
-    if (req.user.rol !== 'supervisor' && req.user.rol !== 'master' && req.user.rol !== 'gerencia') {
+    if (!['supervisor', 'master', 'gerencia'].includes(req.user.rol)) {
       return res.status(403).json({ error: 'No autorizado para crear revisiones' });
     }
 
     let supervisorId = null;
-    let supervisorNombre = req.user.nombre;
+    const supervisorNombre = req.user.nombre;
 
     if (req.user.rol === 'supervisor') {
       supervisorId = req.user.id;
@@ -769,7 +803,7 @@ router.post('/', verifyToken, async (req, res) => {
       fechaRevision: new Date(req.body.fechaRevision) || new Date(),
       localId: new mongoose.Types.ObjectId(req.body.localId),
       supervisorId: supervisorId ? new mongoose.Types.ObjectId(supervisorId) : null,
-      supervisorNombre: supervisorNombre,
+      supervisorNombre,
       administrador: req.body.administrador || {},
       subAdministrador: req.body.subAdministrador || {},
       borranReclamos: req.body.borranReclamos || '',
@@ -784,7 +818,7 @@ router.post('/', verifyToken, async (req, res) => {
       creadoEn: new Date(),
       modificadoPor: req.user.nombre,
       modificadoPorId: req.user.id,
-      modificadoEn: new Date()
+      modificadoEn: new Date(),
     };
 
     const revision = new Revision(revisionData);
@@ -799,9 +833,7 @@ router.post('/', verifyToken, async (req, res) => {
 router.put('/:id', verifyToken, async (req, res) => {
   try {
     const revision = await Revision.findById(req.params.id);
-    if (!revision) {
-      return res.status(404).json({ error: 'Revision no encontrada' });
-    }
+    if (!revision) return res.status(404).json({ error: 'Revision no encontrada' });
 
     const updateData = {
       fechaRevision: new Date(req.body.fechaRevision) || revision.fechaRevision,
@@ -818,7 +850,7 @@ router.put('/:id', verifyToken, async (req, res) => {
       supervisorNombre: req.user.nombre,
       modificadoPor: req.user.nombre,
       modificadoPorId: req.user.id,
-      modificadoEn: new Date()
+      modificadoEn: new Date(),
     };
 
     const updatedRevision = await Revision.findByIdAndUpdate(req.params.id, updateData, { new: true });
@@ -830,18 +862,12 @@ router.put('/:id', verifyToken, async (req, res) => {
 });
 
 router.put('/borrador/:id/finalizar', verifyToken, async (req, res) => {
-  console.log('Finalizando borrador:', req.params.id);
-  console.log('Usuario:', req.user.nombre, '(', req.user.rol, ')');
-
   try {
     const borrador = await Revision.findById(req.params.id);
-    if (!borrador) {
-      console.log('Borrador no encontrado:', req.params.id);
-      return res.status(404).json({ error: 'Borrador no encontrado' });
-    }
+    if (!borrador) return res.status(404).json({ error: 'Borrador no encontrado' });
 
     let supervisorId = null;
-    let supervisorNombre = req.user.nombre;
+    const supervisorNombre = req.user.nombre;
 
     if (req.user.rol === 'supervisor') {
       supervisorId = req.user.id;
@@ -853,24 +879,16 @@ router.put('/borrador/:id/finalizar', verifyToken, async (req, res) => {
       ...req.body,
       localId: req.body.localId ? new mongoose.Types.ObjectId(req.body.localId) : borrador.localId,
       supervisorId: supervisorId ? new mongoose.Types.ObjectId(supervisorId) : borrador.supervisorId,
-      supervisorNombre: supervisorNombre,
+      supervisorNombre,
       esBorrador: false,
       modificadoPor: req.user.nombre,
       modificadoPorId: req.user.id,
-      modificadoEn: new Date()
+      modificadoEn: new Date(),
     };
 
-    const finalizada = await Revision.findByIdAndUpdate(
-      req.params.id,
-      updateData,
-      { new: true, runValidators: false }
-    );
+    const finalizada = await Revision.findByIdAndUpdate(req.params.id, updateData, { new: true, runValidators: false });
+    if (!finalizada) return res.status(404).json({ error: 'No se pudo actualizar el borrador' });
 
-    if (!finalizada) {
-      return res.status(404).json({ error: 'No se pudo actualizar el borrador' });
-    }
-
-    console.log('Borrador finalizado:', finalizada._id);
     res.json(finalizada);
   } catch (error) {
     console.error('Error finalizando borrador:', error);
@@ -881,9 +899,7 @@ router.put('/borrador/:id/finalizar', verifyToken, async (req, res) => {
 router.delete('/:id', verifyToken, async (req, res) => {
   try {
     const revision = await Revision.findById(req.params.id);
-    if (!revision) {
-      return res.status(404).json({ error: 'Revision no encontrada' });
-    }
+    if (!revision) return res.status(404).json({ error: 'Revision no encontrada' });
 
     if (req.user.rol === 'master') {
       await revision.deleteOne();
