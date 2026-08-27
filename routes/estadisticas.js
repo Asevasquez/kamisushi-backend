@@ -24,10 +24,28 @@ router.get('/dashboard', verifyToken, async (req, res) => {
       const todosLocales = await Local.find({ activo: true });
       localesPermitidos = todosLocales.map(l => l._id.toString());
     } else {
-      // Supervisor solo sus propias revisiones
-      const revisiones = await Revision.find({ supervisorId: req.user.supervisorId });
-      const localesIds = [...new Set(revisiones.map(r => r.localId))];
-      localesPermitidos = localesIds;
+      // Supervisor: usa localesAsignados si tiene, sino busca por sus revisiones
+      const localesAsignadosIds = (req.user.localesAsignados || []).map(l => (l._id || l).toString());
+      if (localesAsignadosIds.length > 0) {
+        localesPermitidos = localesAsignadosIds;
+      } else {
+        // Fallback: locales donde ha hecho revisiones
+        const revisiones = await Revision.find({ supervisorId: req.user.id });
+        localesPermitidos = [...new Set(revisiones.map(r => r.localId?.toString()).filter(Boolean))];
+      }
+      // Si no tiene locales ni revisiones, retornar vacío inmediatamente
+      if (localesPermitidos.length === 0) {
+        return res.json({
+          resumen: { totalRevisiones: 0, promedioGeneral: '0.0' },
+          distribucionCategorias: { EXCELENTE: 0, 'MUY BUENO': 0, BUENO: 0, REGULAR: 0, MALO: 0, 'PÉSIMO': 0 },
+          estadisticasPorLocal: [],
+          evolucion: [],
+          topIncidencias: [],
+          estadisticasSupervisores: [],
+          localesPermitidos: [],
+          sinLocalesAsignados: true,
+        });
+      }
     }
 
     const { periodo = 'mensual', fechaInicio, fechaFin, localId } = req.query;
