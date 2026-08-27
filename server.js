@@ -27,7 +27,7 @@ const supervisorRoutes = require('./routes/supervisores');
 const revisionRoutes = require('./routes/revisiones');
 const usuarioRoutes = require('./routes/usuarios');
 const estadisticasRoutes = require('./routes/estadisticas'); // ← AGREGAR
-const uploadRoutes = require('./routes/upload');
+const { router: uploadRoutes } = require('./routes/upload');
 
 // Usar rutas
 app.use('/api/auth', authRoutes);
