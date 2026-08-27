@@ -9,7 +9,10 @@ const { verifyToken, authorize } = require('../middleware/auth');
 // Obtener todos los usuarios (solo master)
 router.get('/', verifyToken, authorize('master'), async (req, res) => {
   try {
-    const usuarios = await Usuario.find().select('-password').sort({ createdAt: -1 });
+    const usuarios = await Usuario.find()
+      .select('-password')
+      .populate('localesAsignados', 'nombre ciudad')  // ← populate para mostrar nombres
+      .sort({ createdAt: -1 });
     res.json(usuarios);
   } catch (error) {
     res.status(500).json({ error: error.message });
