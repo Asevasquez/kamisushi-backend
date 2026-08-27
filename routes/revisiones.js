@@ -7,6 +7,7 @@ const fs = require('fs');
 const Revision = require('../models/Revision');
 const Local = require('../models/Local');
 const { verifyToken, authorize } = require('../middleware/auth');
+const { procesarFotosEnObjeto } = require('./upload');
 
 // ==================== FUNCIONES AUXILIARES ====================
 
@@ -775,6 +776,17 @@ router.post('/borrador', verifyToken, async (req, res) => {
       modificadoEn: new Date(),
     };
 
+    // Procesar fotos base64 → guardar en disco → URL pública
+    if (borradorData.servicioCliente) {
+      borradorData.servicioCliente = procesarFotosEnObjeto(borradorData.servicioCliente);
+    }
+    if (borradorData.cuartoFrio) {
+      borradorData.cuartoFrio = procesarFotosEnObjeto(borradorData.cuartoFrio);
+    }
+    if (borradorData.cuartoCaliente) {
+      borradorData.cuartoCaliente = procesarFotosEnObjeto(borradorData.cuartoCaliente);
+    }
+
     const borrador = new Revision(borradorData);
     await borrador.save();
     res.status(201).json(borrador);
@@ -807,9 +819,9 @@ router.post('/', verifyToken, async (req, res) => {
       administrador: req.body.administrador || {},
       subAdministrador: req.body.subAdministrador || {},
       borranReclamos: req.body.borranReclamos || '',
-      servicioCliente: req.body.servicioCliente || {},
-      cuartoFrio: req.body.cuartoFrio || {},
-      cuartoCaliente: req.body.cuartoCaliente || {},
+      servicioCliente: procesarFotosEnObjeto(req.body.servicioCliente || {}),
+      cuartoFrio: procesarFotosEnObjeto(req.body.cuartoFrio || {}),
+      cuartoCaliente: procesarFotosEnObjeto(req.body.cuartoCaliente || {}),
       porcentajeTotal: Number(req.body.porcentajeTotal) || 0,
       categoria: req.body.categoria || '',
       comentariosGenerales: req.body.comentariosGenerales || '',
@@ -841,9 +853,9 @@ router.put('/:id', verifyToken, async (req, res) => {
       administrador: req.body.administrador || revision.administrador,
       subAdministrador: req.body.subAdministrador || revision.subAdministrador,
       borranReclamos: req.body.borranReclamos || revision.borranReclamos,
-      servicioCliente: req.body.servicioCliente || revision.servicioCliente,
-      cuartoFrio: req.body.cuartoFrio || revision.cuartoFrio,
-      cuartoCaliente: req.body.cuartoCaliente || revision.cuartoCaliente,
+      servicioCliente: req.body.servicioCliente ? procesarFotosEnObjeto(req.body.servicioCliente) : revision.servicioCliente,
+      cuartoFrio: req.body.cuartoFrio ? procesarFotosEnObjeto(req.body.cuartoFrio) : revision.cuartoFrio,
+      cuartoCaliente: req.body.cuartoCaliente ? procesarFotosEnObjeto(req.body.cuartoCaliente) : revision.cuartoCaliente,
       porcentajeTotal: Number(req.body.porcentajeTotal) || revision.porcentajeTotal,
       categoria: req.body.categoria || revision.categoria,
       comentariosGenerales: req.body.comentariosGenerales || revision.comentariosGenerales,
