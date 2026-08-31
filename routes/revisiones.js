@@ -15,7 +15,7 @@ function getTextoPreguntaSC(id) {
   const textos = {
     'SC-01': 'El local cumple con la presentacion y estado fisico del local',
     'SC-02': 'Hay presencia del encargado en el local',
-    'SC-03': 'No existen reclamos de clientes',
+    'SC-03': '¿Utilizan correctamente los discursos de persuasión de agua PCM?',
     'SC-04': 'Cumple con el protocolo de atencion al cliente',
     'SC-05': 'Cumple con la persuasion de promociones LUX - Presencial',
     'SC-06': 'Cumple con la persuasion de promociones LUX - Llamadas',
