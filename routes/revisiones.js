@@ -588,13 +588,24 @@ router.get('/estadisticas-por-local', verifyToken, async (req, res) => {
     let query = {};
 
     if (req.user.rol === 'supervisor') {
-      query.supervisorId = req.user.id;
+      // Tolerar tanto string como ObjectId para compatibilidad con revisiones antiguas
+      try {
+        query.$or = [
+          { supervisorId: req.user.id },
+          { supervisorId: new mongoose.Types.ObjectId(req.user.id) }
+        ];
+      } catch(e) {
+        query.supervisorId = req.user.id;
+      }
     }
 
     if (req.user.rol === 'administrador') {
       const localesAsignados = req.user.localesAsignados?.map(l => l._id?.toString() || l) || [];
       if (localesAsignados.length > 0) {
-        query.localId = { $in: localesAsignados.map(id => new mongoose.Types.ObjectId(id)) };
+        const localIds = localesAsignados.flatMap(id => {
+          try { return [id, new mongoose.Types.ObjectId(id)]; } catch(e) { return [id]; }
+        });
+        query.localId = { $in: localIds };
       } else {
         return res.json({});
       }
