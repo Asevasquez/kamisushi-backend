@@ -8,9 +8,11 @@ const coordenadaSchema = {
 };
 
 const revisionSchema = new mongoose.Schema({
-  fechaRevision:    { type: Date,    default: Date.now, index: true },
-  localId:          { type: String,  required: true,    index: true },
-  supervisorId:     { type: String,  required: true,    index: true },
+  fechaRevision:    { type: Date,                                    default: Date.now, index: true },
+  // ObjectId referenciando al modelo Local — permite populate
+  localId:          { type: mongoose.Schema.Types.ObjectId, ref: 'Local',    required: true, index: true },
+  // ObjectId referenciando al modelo Usuario
+  supervisorId:     { type: mongoose.Schema.Types.ObjectId, ref: 'Usuario',  required: true, index: true },
   supervisorNombre: { type: String,  default: '' },
   administrador: {
     nombre:   { type: String,  default: '' },
@@ -50,10 +52,10 @@ const revisionSchema = new mongoose.Schema({
 
 }, { timestamps: true });
 
-// Índices compuestos — los más usados en queries
-revisionSchema.index({ localId: 1, fechaRevision: -1 });       // revisiones por local ordenadas por fecha
-revisionSchema.index({ supervisorId: 1, fechaRevision: -1 });  // revisiones por supervisor
-revisionSchema.index({ esBorrador: 1, supervisorId: 1 });      // borradores por supervisor
-revisionSchema.index({ fechaRevision: -1, esBorrador: 1 });    // listado general por fecha
+// Índices compuestos
+revisionSchema.index({ localId: 1, fechaRevision: -1 });
+revisionSchema.index({ supervisorId: 1, fechaRevision: -1 });
+revisionSchema.index({ esBorrador: 1, supervisorId: 1 });
+revisionSchema.index({ fechaRevision: -1, esBorrador: 1 });
 
 module.exports = mongoose.model('Revision', revisionSchema);
