@@ -765,6 +765,43 @@ router.post('/borrador', verifyToken, async (req, res) => {
   }
 });
 
+
+// Actualizar borrador existente (auto-guardado)
+router.put('/borrador/:id', verifyToken, async (req, res) => {
+  try {
+    const borrador = await Revision.findOne({ _id: req.params.id, esBorrador: true });
+    if (!borrador) {
+      return res.status(404).json({ error: 'Borrador no encontrado' });
+    }
+
+    const updateData = {
+      ...req.body,
+      esBorrador: true,
+      modificadoPor: req.user.nombre,
+      modificadoPorId: req.user.id,
+      modificadoEn: new Date(),
+    };
+
+    // Convertir IDs si vienen como string
+    if (req.body.localId) {
+      try { updateData.localId = new mongoose.Types.ObjectId(req.body.localId); } catch(e) {}
+    }
+    if (req.body.supervisorId) {
+      try { updateData.supervisorId = new mongoose.Types.ObjectId(req.body.supervisorId); } catch(e) {}
+    }
+
+    const updated = await Revision.findByIdAndUpdate(
+      req.params.id,
+      updateData,
+      { new: true }
+    );
+    res.json(updated);
+  } catch (error) {
+    console.error('Error actualizando borrador:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.post('/', verifyToken, async (req, res) => {
   try {
     if (req.user.rol !== 'supervisor' && req.user.rol !== 'master' && req.user.rol !== 'gerencia') {
