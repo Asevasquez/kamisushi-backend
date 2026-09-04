@@ -119,11 +119,12 @@ function formatDate(dateString) {
 async function generarPDF(res, revision) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: 50, size: 'A4' });
-    const nombreLocal = (typeof revision.localId === 'object' ? revision.localId?.nombre : null) || 'Local';
+    const nombreLocal = ((typeof revision.localId === 'object' ? revision.localId?.nombre : null) || 'Local').replace(/\s+/g, '_');
     const fechaStr = revision.fechaRevision
       ? new Date(revision.fechaRevision).toLocaleDateString('es-CL').replace(/\//g, '-')
       : '';
-    const filename = `Revision_${nombreLocal}_${fechaStr}_${revision._id}.pdf`;
+    const idCorto = revision._id.toString().slice(-8);
+    const filename = `Revision_${nombreLocal}_${fechaStr}_${idCorto}.pdf`;
     
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
@@ -293,8 +294,20 @@ async function generarPDF(res, revision) {
     
     // ============================================================
     // HOJA 2: DETALLE DE OBSERVACIONES Y RECLAMOS
+    // Solo si hay observaciones o reclamos
     // ============================================================
-    doc.addPage();
+    const hayObsSC = Object.entries(revision.servicioCliente?.respuestas || {}).some(([_, v]) => v.cumple === false && v.observacion?.trim());
+    const hayObsCF = Object.entries(revision.cuartoFrio?.respuestas || {}).some(([_, v]) => v.cumple === false && v.observacion?.trim());
+    const hayObsCC = Object.entries(revision.cuartoCaliente?.respuestas || {}).some(([_, v]) => v.cumple === false && v.observacion?.trim());
+    const hayReclamos = (revision.servicioCliente?.reclamos?.length || 0) > 0;
+    const hayFotos = Object.values({
+      ...revision.servicioCliente?.respuestas,
+      ...revision.cuartoFrio?.respuestas,
+      ...revision.cuartoCaliente?.respuestas
+    }).some(v => v.fotos?.length > 0);
+
+    if (hayObsSC || hayObsCF || hayObsCC || hayReclamos || hayFotos) {
+      doc.addPage();
     
     // TITULO HOJA 2
     doc.fontSize(15).fillColor('#d32f2f').text('DETALLE DE OBSERVACIONES Y RECLAMOS', { align: 'center', underline: true });
@@ -571,7 +584,9 @@ async function generarPDF(res, revision) {
       footerY2,
       { align: 'center' }
     );
-    
+
+    } // fin if hay observaciones/reclamos/fotos
+
     // FINALIZAR
     doc.end();
     doc.on('finish', resolve);
