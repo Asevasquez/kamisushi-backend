@@ -670,7 +670,7 @@ router.get('/estadisticas-por-local', verifyToken, async (req, res) => {
 
 router.get('/', verifyToken, async (req, res) => {
   try {
-    const { localId, supervisorId, fechaInicio, fechaFin, page = 1, limit = 10 } = req.query;
+    const { localId, supervisorId, fechaInicio, fechaFin, esBorrador, page = 1, limit = 10 } = req.query;
     let query = {};
     let localesPermitidos = null; // null = sin restricción (master/gerencia)
 
@@ -701,6 +701,11 @@ router.get('/', verifyToken, async (req, res) => {
       query.fechaRevision = {};
       if (fechaInicio) query.fechaRevision.$gte = new Date(fechaInicio);
       if (fechaFin) query.fechaRevision.$lte = new Date(fechaFin);
+    }
+
+    // Filtro explícito de borrador (ej. HomeScreen pide solo los pendientes de finalizar)
+    if (esBorrador !== undefined) {
+      query.esBorrador = esBorrador === 'true' || esBorrador === true;
     }
 
     const pageNum = Math.max(parseInt(page, 10) || 1, 1);
