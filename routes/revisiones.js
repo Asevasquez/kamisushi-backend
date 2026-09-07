@@ -670,33 +670,62 @@ router.get('/estadisticas-por-local', verifyToken, async (req, res) => {
 
 router.get('/', verifyToken, async (req, res) => {
   try {
+    const { localId, supervisorId, fechaInicio, fechaFin, page = 1, limit = 10 } = req.query;
     let query = {};
+    let localesPermitidos = null; // null = sin restricción (master/gerencia)
 
     if (req.user.rol === 'supervisor') {
       query.supervisorId = req.user.id;
+    } else if (req.user.rol === 'administrador') {
+      const asignados = (req.user.localesAsignados || []).map(l => (l._id || l).toString());
+      if (asignados.length === 0) return res.json({ data: [], total: 0 });
+      localesPermitidos = asignados;
     }
 
-    if (req.user.rol === 'administrador') {
-      const localesAsignados = req.user.localesAsignados?.map(l => l._id?.toString() || l) || [];
-      if (localesAsignados.length > 0) {
-        query.localId = { $in: localesAsignados.map(id => new mongoose.Types.ObjectId(id)) };
-      } else {
-        return res.json([]);
+    // Filtro de local: valida contra los permisos del administrador antes de aplicarlo
+    if (localId) {
+      if (localesPermitidos && !localesPermitidos.includes(localId)) {
+        return res.status(403).json({ error: 'No tienes acceso a este local' });
       }
+      query.localId = new mongoose.Types.ObjectId(localId);
+    } else if (localesPermitidos) {
+      query.localId = { $in: localesPermitidos.map(id => new mongoose.Types.ObjectId(id)) };
     }
 
-    const revisiones = await Revision.find(query)
-      .populate('localId', 'nombre ciudad direccion')
-      .populate('supervisorId', 'nombre email')
-      .sort({ fechaRevision: -1 });
+    // El supervisor no puede pedir revisiones de otro supervisor
+    if (supervisorId && req.user.rol !== 'supervisor') {
+      query.supervisorId = new mongoose.Types.ObjectId(supervisorId);
+    }
 
-    const revisionesConNombres = revisiones.map(rev => ({
-      ...rev.toObject(),
+    if (fechaInicio || fechaFin) {
+      query.fechaRevision = {};
+      if (fechaInicio) query.fechaRevision.$gte = new Date(fechaInicio);
+      if (fechaFin) query.fechaRevision.$lte = new Date(fechaFin);
+    }
+
+    const pageNum = Math.max(parseInt(page, 10) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100); // tope de seguridad
+
+    // Proyección liviana para el LISTADO: sin respuestas ni reclamos (ahí van las fotos en base64).
+    // El detalle completo (con fotos) se sigue pidiendo aparte via GET /:id cuando el usuario
+    // selecciona una revisión puntual.
+    const [revisiones, total] = await Promise.all([
+      Revision.find(query)
+        .select('fechaRevision localId supervisorId supervisorNombre porcentajeTotal categoria esBorrador')
+        .populate('localId', 'nombre ciudad direccion')
+        .sort({ fechaRevision: -1 })
+        .skip((pageNum - 1) * limitNum)
+        .limit(limitNum)
+        .lean(),
+      Revision.countDocuments(query),
+    ]);
+
+    const data = revisiones.map(rev => ({
+      ...rev,
       localNombre: rev.localId?.nombre || rev.localId,
-      supervisorNombre: rev.supervisorId?.nombre || rev.supervisorNombre
     }));
 
-    res.json(revisionesConNombres);
+    res.json({ data, total });
   } catch (error) {
     console.error('Error:', error);
     res.status(500).json({ error: error.message });
