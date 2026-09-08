@@ -1,10 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
+const fs = require('fs');
+const path = require('path');
 const PDFDocument = require('pdfkit');
 const Revision = require('../models/Revision');
 const Local = require('../models/Local');
 const { verifyToken, authorize } = require('../middleware/auth');
+const { procesarFotosEnObjeto } = require('./upload');
 
 // ==================== FUNCIONES AUXILIARES ====================
 
@@ -87,7 +90,7 @@ function getColorCategoria(categoria) {
     'BUENO': '#2196f3',
     'REGULAR': '#ff9800',
     'MALO': '#f44336',
-    'PESIMO': '#d32f2f'
+    'PÉSIMO': '#d32f2f'
   };
   return colores[categoria] || '#666666';
 }
@@ -99,7 +102,7 @@ function getCategoriaTexto(categoria) {
     'BUENO': 'Bueno',
     'REGULAR': 'Regular',
     'MALO': 'Malo',
-    'PESIMO': 'Pesimo'
+    'PÉSIMO': 'Pésimo'
   };
   return textos[categoria] || categoria || 'Sin categoria';
 }
@@ -116,483 +119,465 @@ function formatDate(dateString) {
 
 // ==================== GENERACIÓN DE PDF ====================
 
+const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
+
+// Resuelve una referencia de foto (URL '/uploads/xxx.jpg' o, para datos antiguos,
+// un data:image;base64) a algo que doc.image() de pdfkit pueda dibujar:
+// una ruta de archivo en disco, o un Buffer. Devuelve null si no se puede usar
+// (archivo faltante, formato inválido, etc.) para no romper el resto del PDF.
+function resolverImagenParaPDF(fotoRef) {
+  if (!fotoRef || typeof fotoRef !== 'string') return null;
+  try {
+    if (fotoRef.startsWith('data:image')) {
+      const matches = fotoRef.match(/^data:image\/\w+;base64,(.+)$/);
+      if (!matches) return null;
+      return Buffer.from(matches[1], 'base64');
+    }
+    if (fotoRef.startsWith('/uploads/')) {
+      const filePath = path.join(UPLOADS_DIR, path.basename(fotoRef));
+      return fs.existsSync(filePath) ? filePath : null;
+    }
+  } catch (e) {
+    return null;
+  }
+  return null;
+}
+
+// Dibuja hasta 4 miniaturas en fila a partir de x,y. Devuelve el alto ocupado
+// (0 si no había fotos válidas) para que el caller haga moveDown según corresponda.
+function dibujarFilaFotos(doc, fotos, x, y) {
+  const validas = (fotos || []).map(resolverImagenParaPDF).filter(Boolean);
+  if (validas.length === 0) return 0;
+
+  const TAM = 55, GAP = 6, MAX = 4;
+  const mostrar = validas.slice(0, MAX);
+  mostrar.forEach((img, i) => {
+    try {
+      doc.rect(x + i * (TAM + GAP), y, TAM, TAM).stroke('#dddddd');
+      doc.image(img, x + i * (TAM + GAP) + 1, y + 1, { fit: [TAM - 2, TAM - 2], align: 'center', valign: 'center' });
+    } catch (e) {
+      // Imagen corrupta o formato no soportado: se omite sin interrumpir el resto del PDF
+    }
+  });
+  if (validas.length > MAX) {
+    doc.fontSize(8).fillColor('#999999')
+      .text(`+${validas.length - MAX} más`, x + MAX * (TAM + GAP), y + TAM / 2 - 4);
+  }
+  return TAM;
+}
+
+// Caja de observación general de una sección (o de "Derivación a Laury").
+// Siempre se dibuja, incluso vacía, con un texto tipo "Sin observaciones".
+function dibujarCajaObservacion(doc, label, texto, colores) {
+  const tieneTexto = texto && texto.trim() !== '';
+  const esLaury = label.toLowerCase().includes('laury');
+  const contenido = tieneTexto ? texto.trim() : (esLaury ? 'Sin derivación' : 'Sin observaciones');
+
+  const yStart = doc.y;
+  const alturaTexto = doc.heightOfString(contenido, { width: 470, fontSize: 9.5 });
+  const alturaCaja = 28 + alturaTexto;
+
+  doc.roundedRect(50, yStart, 495, alturaCaja, 4).fillAndStroke(colores.fondo, colores.borde);
+  doc.fontSize(8).fillColor(colores.label).text(label.toUpperCase(), 60, yStart + 8);
+  doc.fontSize(9.5).fillColor(tieneTexto ? '#333333' : '#999999');
+  if (!tieneTexto) doc.font('Helvetica-Oblique');
+  doc.text(contenido, 60, yStart + 19, { width: 470 });
+  doc.font('Helvetica');
+
+  doc.y = yStart + alturaCaja + 8;
+}
+
 async function generarPDF(res, revision) {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ margin: 50, size: 'A4' });
-    const nombreLocal = ((typeof revision.localId === 'object' ? revision.localId?.nombre : null) || 'Local').replace(/\s+/g, '_');
+    const doc = new PDFDocument({ margin: 50, size: 'A4', bufferPages: true });
+    const nombreLocalRaw = (typeof revision.localId === 'object' ? revision.localId?.nombre : null) || 'Local';
+    const nombreLocal = nombreLocalRaw.replace(/[^\w\-]+/g, '_');
     const fechaStr = revision.fechaRevision
       ? new Date(revision.fechaRevision).toLocaleDateString('es-CL').replace(/\//g, '-')
       : '';
     const idCorto = revision._id.toString().slice(-8);
     const filename = `Revision_${nombreLocal}_${fechaStr}_${idCorto}.pdf`;
-    
+
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
-    
+
     doc.pipe(res);
     doc.font('Helvetica');
-    
+
     // ============================================================
-    // HOJA 1: RESUMEN GENERAL (sin reclamos detallados)
+    // HOJA 1: RESUMEN GENERAL
     // ============================================================
-    
-    // TITULO
-    doc.fontSize(22)
-       .fillColor('#d32f2f')
-       .text('KAMI SUSHI', { align: 'center' });
-    doc.fontSize(11)
-       .fillColor('#666666')
-       .text('Sistema de Supervision', { align: 'center' });
+
+    doc.fontSize(22).fillColor('#d32f2f').text('KAMI SUSHI', { align: 'center' });
+    doc.fontSize(11).fillColor('#666666').text('Sistema de Supervision', { align: 'center' });
     doc.moveDown(0.5);
-    
-    // LINEA SEPARADORA
     doc.strokeColor('#d32f2f').lineWidth(2);
-    doc.moveTo(50, 125).lineTo(545, 125).stroke();
-    doc.moveDown(0.5);
-    
-    // TITULO DEL INFORME
-    doc.fontSize(16)
-       .fillColor('#333333')
-       .text('INFORME DE REVISION', { align: 'center' });
-    doc.fontSize(10)
-       .fillColor('#888888')
-       .text('N°: REV-' + revision._id.toString().slice(-8).toUpperCase(), { align: 'center' });
-    doc.moveDown(1.5);
-    
-    // ========== INFORMACION GENERAL ==========
-    doc.fontSize(13).fillColor('#d32f2f').text('INFORMACION GENERAL', { underline: true });
-    doc.moveDown(0.5);
-    
-    const infoItems = [
-      { label: 'Local:', value: (typeof revision.localId === 'object' ? revision.localId?.nombre : revision.localId) || 'No especificado' },
-      { label: 'Fecha:', value: formatDate(revision.fechaRevision) },
-      { label: 'Supervisor:', value: revision.supervisorNombre || revision.supervisorId?.nombre || 'No especificado' },
-      { label: 'Tipo:', value: revision.esBorrador ? 'BORRADOR' : 'FINAL' },
-    ];
-    
-    let yInfo = doc.y;
-    doc.fontSize(10).fillColor('#333333');
-    infoItems.forEach((item, i) => {
-      const yPos = yInfo + (i * 22);
-      doc.text(item.label, 50, yPos, { width: 80 });
-      doc.text(item.value, 130, yPos);
-    });
-    doc.moveDown(infoItems.length * 0.5 + 1);
-    
-    // ========== CALIFICACION GLOBAL ==========
-    doc.fontSize(13).fillColor('#d32f2f').text('CALIFICACION GLOBAL', { underline: true });
-    doc.moveDown(0.5);
-    
+    doc.moveTo(50, doc.y).lineTo(545, doc.y).stroke();
+    doc.moveDown(0.7);
+
+    doc.fontSize(16).fillColor('#333333').text('INFORME DE REVISION', { align: 'center' });
+    doc.fontSize(10).fillColor('#888888')
+      .text(`N°: REV-${idCorto.toUpperCase()} · ${nombreLocalRaw}`, { align: 'center' });
+    doc.moveDown(1.2);
+
+    // ========== CALIFICACION GLOBAL (tarjeta destacada) ==========
     const porcentaje = revision.porcentajeTotal || 0;
     const categoria = revision.categoria || 'Sin categoria';
     const categoriaTexto = getCategoriaTexto(categoria);
     const colorCategoria = getColorCategoria(categoria);
-    
-    const barWidth = Math.max((porcentaje / 100) * 400, 5);
-    doc.rect(50, doc.y, 400, 22).fill('#eeeeee');
-    doc.rect(50, doc.y, barWidth, 22).fill(getColorPorcentaje(porcentaje));
-    doc.fontSize(14).fillColor('#333333').text(porcentaje + '%', 460, doc.y + 3);
-    doc.moveDown(1.2);
-    
-    doc.fontSize(11).fillColor('#333333').text('Categoria:', 50, doc.y);
-    doc.fontSize(13).fillColor(colorCategoria).text(categoriaTexto, 130, doc.y - 1);
-    doc.moveDown(1.8);
-    
-    // ========== KPIs POR SECCION ==========
-    doc.fontSize(13).fillColor('#d32f2f').text('KPIS POR SECCION', { underline: true });
-    doc.moveDown(0.5);
-    
-    const secciones = [
-      { nombre: 'Servicio al Cliente', data: revision.servicioCliente, peso: '40%' },
-      { nombre: 'Cuarto Frio', data: revision.cuartoFrio, peso: '30%' },
-      { nombre: 'Cuarto Caliente', data: revision.cuartoCaliente, peso: '30%' }
+
+    const heroY = doc.y;
+    doc.rect(50, heroY, 495, 70).fillAndStroke(hexConAlpha(colorCategoria, 0.08), colorCategoria);
+    doc.fontSize(8).fillColor(colorCategoria).text('CALIFICACION GLOBAL', 68, heroY + 14);
+    doc.fontSize(30).fillColor(colorCategoria).text(porcentaje + '%', 68, heroY + 26);
+    doc.roundedRect(68, heroY + 54, 90, 14, 7).fill(colorCategoria);
+    doc.fontSize(9).fillColor('#ffffff').text(categoriaTexto.toUpperCase(), 68, heroY + 57, { width: 90, align: 'center' });
+    doc.y = heroY + 82;
+    doc.moveDown(0.8);
+
+    // ========== INFORMACION GENERAL (tarjetas) ==========
+    const infoItems = [
+      { label: 'LOCAL', value: nombreLocalRaw },
+      { label: 'FECHA', value: formatDate(revision.fechaRevision) },
+      { label: 'SUPERVISOR', value: revision.supervisorNombre || revision.supervisorId?.nombre || 'No especificado' },
+      { label: 'TIPO', value: revision.esBorrador ? 'BORRADOR' : 'FINAL' },
     ];
-    
-    for (const seccion of secciones) {
-      const respuestas = seccion.data?.respuestas || {};
+    dibujarTarjetasInfo(doc, infoItems);
+    doc.moveDown(1);
+
+    // ========== KPIs POR SECCION (tarjetas lado a lado) ==========
+    doc.fontSize(12).fillColor('#d32f2f').text('KPIS POR SECCION', 50, doc.y, { underline: true });
+    doc.moveDown(0.6);
+
+    const secciones = [
+      { nombre: 'Servicio Cliente', peso: '40%', data: revision.servicioCliente },
+      { nombre: 'Cuarto Frio', peso: '30%', data: revision.cuartoFrio },
+      { nombre: 'Cuarto Caliente', peso: '30%', data: revision.cuartoCaliente },
+    ];
+    const kpiData = secciones.map(s => {
+      const respuestas = s.data?.respuestas || {};
       const items = Object.keys(respuestas).length;
       const cumplidos = Object.values(respuestas).filter(v => v.cumple === true).length;
-      const porcentajeSeccion = items > 0 ? Math.round((cumplidos / items) * 100) : 0;
-      const colorSeccion = getColorPorcentaje(porcentajeSeccion);
-      
-      doc.fontSize(10).fillColor('#333333');
-      doc.text(seccion.nombre + ' (' + seccion.peso + '):', 50, doc.y);
-      doc.fillColor(colorSeccion);
-      doc.text(porcentajeSeccion + '% (' + cumplidos + '/' + items + ')', 250, doc.y - 12);
-      doc.moveDown(0.3);
-      
-      const smallBarWidth = Math.max((porcentajeSeccion / 100) * 200, 2);
-      doc.rect(50, doc.y, 200, 8).fill('#eeeeee');
-      doc.rect(50, doc.y, smallBarWidth, 8).fill(colorSeccion);
+      const pct = items > 0 ? Math.round((cumplidos / items) * 100) : 0;
+      return { ...s, pct, cumplidos, items };
+    });
+    dibujarTarjetasKPI(doc, kpiData);
+    doc.moveDown(1);
+
+    // ========== ADMINISTRADORES ==========
+    doc.fontSize(12).fillColor('#d32f2f').text('ADMINISTRADORES', 50, doc.y, { underline: true });
+    doc.moveDown(0.5);
+    dibujarTarjetasAdmin(doc, [
+      { nombre: 'Administrador: ' + (revision.administrador?.nombre || 'N/A'), presente: !!revision.administrador?.presente },
+      { nombre: 'Sub / Encargado: ' + (revision.subAdministrador?.nombre || 'N/A'), presente: !!revision.subAdministrador?.presente },
+    ]);
+    doc.fontSize(9).fillColor('#666666')
+      .text('Borran reclamos: ' + (revision.borranReclamos || 'No especificado'), 50, doc.y + 6);
+    doc.moveDown(1.2);
+
+    // ========== RECLAMOS (solo contador) ==========
+    const reclamos = revision.servicioCliente?.reclamos || [];
+    doc.fontSize(12).fillColor('#d32f2f').text('RECLAMOS', 50, doc.y, { underline: true });
+    doc.moveDown(0.4);
+    if (reclamos.length > 0) {
+      const yStat = doc.y;
+      doc.roundedRect(50, yStat, 495, 34, 5).fillAndStroke('#fff5f5', '#ffcdd2');
+      doc.fontSize(16).fillColor('#d32f2f').text(String(reclamos.length), 65, yStat + 8);
+      doc.fontSize(9).fillColor('#888888')
+        .text('reclamo(s) registrado(s) — ver detalle en Hoja 2', 100, yStat + 13);
+      doc.y = yStat + 44;
+    } else {
+      doc.fontSize(10).fillColor('#4caf50').text('No se registraron reclamos', 50, doc.y);
       doc.moveDown(0.8);
     }
-    doc.moveDown(1);
-    
-    // ========== ADMINISTRADORES ==========
-    doc.fontSize(13).fillColor('#d32f2f').text('ADMINISTRADORES', { underline: true });
-    doc.moveDown(0.5);
-    
-    const adminNombre = revision.administrador?.nombre || 'N/A';
-    const adminPresente = revision.administrador?.presente ? 'Presente' : 'Ausente';
-    const subAdminNombre = revision.subAdministrador?.nombre || 'N/A';
-    const subAdminPresente = revision.subAdministrador?.presente ? 'Presente' : 'Ausente';
-    
-    doc.fontSize(10).fillColor('#333333');
-    doc.text('Administrador: ' + adminNombre, 50, doc.y);
-    doc.text('(' + adminPresente + ')', 230, doc.y - 12);
     doc.moveDown(0.6);
-    
-    doc.text('Sub Administrador: ' + subAdminNombre, 50, doc.y);
-    doc.text('(' + subAdminPresente + ')', 230, doc.y - 12);
-    doc.moveDown(0.6);
-    
-    doc.text('Borran reclamos: ' + (revision.borranReclamos || 'No especificado'), 50, doc.y);
-    doc.moveDown(1.5);
-    
-    // ========== SOLO CONTADOR DE RECLAMOS EN HOJA 1 ==========
-    const reclamos = revision.servicioCliente?.reclamos || [];
-    doc.fontSize(13).fillColor('#d32f2f').text('RECLAMOS', { underline: true });
-    doc.moveDown(0.5);
-    
-    if (reclamos.length > 0) {
-      doc.fontSize(10).fillColor('#d32f2f');
-      doc.text('Total de reclamos registrados: ' + reclamos.length, 50, doc.y);
-      doc.moveDown(0.5);
-      doc.fontSize(9).fillColor('#888888');
-      doc.text('Ver detalle completo en la Hoja 2', 50, doc.y);
-    } else {
-      doc.fontSize(10).fillColor('#4caf50');
-      doc.text('No se registraron reclamos', 50, doc.y);
-    }
-    doc.moveDown(1.5);
-    
+
     // ========== COMENTARIOS GENERALES ==========
-    if (revision.comentariosGenerales) {
-      doc.fontSize(13).fillColor('#d32f2f').text('COMENTARIOS GENERALES', { underline: true });
-      doc.moveDown(0.5);
-      doc.fontSize(10).fillColor('#333333');
-      
-      const comentario = revision.comentariosGenerales;
-      const lines = comentario.split('\n');
-      for (const line of lines) {
-        if (line.trim()) {
-          doc.text(line.trim(), 50, doc.y, { width: 500 });
-          doc.moveDown(0.2);
-        }
-      }
+    if (revision.comentariosGenerales && revision.comentariosGenerales.trim()) {
+      doc.fontSize(12).fillColor('#d32f2f').text('COMENTARIOS GENERALES', 50, doc.y, { underline: true });
+      doc.moveDown(0.4);
+      const yBox = doc.y;
+      const alturaTxt = doc.heightOfString(revision.comentariosGenerales.trim(), { width: 475, fontSize: 9.5 });
+      doc.roundedRect(50, yBox, 495, alturaTxt + 20, 5).fill('#f7f7f7');
+      doc.fontSize(9.5).fillColor('#444444').text(revision.comentariosGenerales.trim(), 60, yBox + 10, { width: 475 });
+      doc.y = yBox + alturaTxt + 28;
     }
-    
-    // PIE DE PAGINA - HOJA 1
-    const footerY1 = doc.page.height - 40;
-    doc.fontSize(8).fillColor('#aaaaaa');
-    doc.text(
+
+    const footerY1 = doc.page.height - 60;
+    doc.fontSize(8).fillColor('#aaaaaa').text(
       'Generado por: ' + (revision.creadoPor || 'Sistema') + ' | ' + new Date().toLocaleString('es-CL') + ' | Pagina 1',
-      50,
-      footerY1,
-      { align: 'center' }
+      50, footerY1, { align: 'center' }
     );
-    
+
     // ============================================================
     // HOJA 2: DETALLE DE OBSERVACIONES Y RECLAMOS
-    // Solo si hay observaciones o reclamos
     // ============================================================
-    const hayObsSC = Object.entries(revision.servicioCliente?.respuestas || {}).some(([_, v]) => v.cumple === false && v.observacion?.trim());
-    const hayObsCF = Object.entries(revision.cuartoFrio?.respuestas || {}).some(([_, v]) => v.cumple === false && v.observacion?.trim());
-    const hayObsCC = Object.entries(revision.cuartoCaliente?.respuestas || {}).some(([_, v]) => v.cumple === false && v.observacion?.trim());
-    const hayReclamos = (revision.servicioCliente?.reclamos?.length || 0) > 0;
-    const hayFotos = Object.values({
-      ...revision.servicioCliente?.respuestas,
-      ...revision.cuartoFrio?.respuestas,
-      ...revision.cuartoCaliente?.respuestas
-    }).some(v => v.fotos?.length > 0);
-
-    if (hayObsSC || hayObsCF || hayObsCC || hayReclamos || hayFotos) {
-      doc.addPage();
-    
-    // TITULO HOJA 2
-    doc.fontSize(15).fillColor('#d32f2f').text('DETALLE DE OBSERVACIONES Y RECLAMOS', { align: 'center', underline: true });
-    doc.moveDown(0.5);
-    doc.fontSize(9).fillColor('#888888');
-    doc.text('Este informe detalla todas las observaciones, hallazgos y reclamos de la revision', { align: 'center' });
-    doc.moveDown(1);
-    
-    // ===== SECCION 1: OBSERVACIONES POR AREA =====
-    
-    // 1.1 SERVICIO AL CLIENTE
-    const observacionesSC = Object.entries(revision.servicioCliente?.respuestas || {})
-      .filter(([_, v]) => v.cumple === false && v.observacion && v.observacion.trim() !== '');
-    
-    if (observacionesSC.length > 0) {
-      doc.fontSize(12).fillColor('#2196f3').text('SERVICIO AL CLIENTE', { underline: true });
-      doc.moveDown(0.3);
-      
-      for (const [id, respuesta] of observacionesSC) {
-        if (doc.y > 700) {
-          doc.addPage();
-          doc.fontSize(12).fillColor('#2196f3').text('SERVICIO AL CLIENTE (continuacion)', { underline: true });
-          doc.moveDown(0.3);
-        }
-        
-        const yStart = doc.y;
-        doc.rect(45, yStart, 500, 50).stroke('#dddddd');
-        
-        doc.fontSize(9).fillColor('#d32f2f');
-        doc.text(id + ':', 55, yStart + 6);
-        doc.fontSize(8).fillColor('#333333');
-        const textoPregunta = getTextoPreguntaSC(id);
-        doc.text(textoPregunta.substring(0, 70), 55, yStart + 18);
-        
-        if (respuesta.observacion) {
-          doc.fontSize(8).fillColor('#666666');
-          const obs = respuesta.observacion.length > 80 ? respuesta.observacion.substring(0, 80) + '...' : respuesta.observacion;
-          doc.text('Observacion: ' + obs, 55, yStart + 32);
-        }
-        
-        doc.moveDown(1.3);
-      }
-      doc.moveDown(0.5);
-    } else {
-      doc.fontSize(10).fillColor('#4caf50');
-      doc.text('Servicio al Cliente - Sin observaciones pendientes', 50, doc.y);
-      doc.moveDown(1);
-    }
-    
-    // 1.2 CUARTO FRIO
-    const observacionesCF = Object.entries(revision.cuartoFrio?.respuestas || {})
-      .filter(([_, v]) => v.cumple === false && v.observacion && v.observacion.trim() !== '');
-    
-    if (observacionesCF.length > 0) {
-      if (doc.y > 650) doc.addPage();
-      
-      doc.fontSize(12).fillColor('#2196f3').text('CUARTO FRIO', { underline: true });
-      doc.moveDown(0.3);
-      
-      for (const [id, respuesta] of observacionesCF) {
-        if (doc.y > 700) {
-          doc.addPage();
-          doc.fontSize(12).fillColor('#2196f3').text('CUARTO FRIO (continuacion)', { underline: true });
-          doc.moveDown(0.3);
-        }
-        
-        const yStart = doc.y;
-        doc.rect(45, yStart, 500, 50).stroke('#dddddd');
-        
-        doc.fontSize(9).fillColor('#d32f2f');
-        doc.text(id + ':', 55, yStart + 6);
-        doc.fontSize(8).fillColor('#333333');
-        const textoPregunta = getTextoPreguntaCF(id);
-        doc.text(textoPregunta.substring(0, 70), 55, yStart + 18);
-        
-        if (respuesta.observacion) {
-          doc.fontSize(8).fillColor('#666666');
-          const obs = respuesta.observacion.length > 80 ? respuesta.observacion.substring(0, 80) + '...' : respuesta.observacion;
-          doc.text('Observacion: ' + obs, 55, yStart + 32);
-        }
-        
-        doc.moveDown(1.3);
-      }
-      doc.moveDown(0.5);
-    } else {
-      doc.fontSize(10).fillColor('#4caf50');
-      doc.text('Cuarto Frio - Sin observaciones pendientes', 50, doc.y);
-      doc.moveDown(1);
-    }
-    
-    // 1.3 CUARTO CALIENTE
-    const observacionesCC = Object.entries(revision.cuartoCaliente?.respuestas || {})
-      .filter(([_, v]) => v.cumple === false && v.observacion && v.observacion.trim() !== '');
-    
-    if (observacionesCC.length > 0) {
-      if (doc.y > 650) doc.addPage();
-      
-      doc.fontSize(12).fillColor('#2196f3').text('CUARTO CALIENTE', { underline: true });
-      doc.moveDown(0.3);
-      
-      for (const [id, respuesta] of observacionesCC) {
-        if (doc.y > 700) {
-          doc.addPage();
-          doc.fontSize(12).fillColor('#2196f3').text('CUARTO CALIENTE (continuacion)', { underline: true });
-          doc.moveDown(0.3);
-        }
-        
-        const yStart = doc.y;
-        doc.rect(45, yStart, 500, 50).stroke('#dddddd');
-        
-        doc.fontSize(9).fillColor('#d32f2f');
-        doc.text(id + ':', 55, yStart + 6);
-        doc.fontSize(8).fillColor('#333333');
-        const textoPregunta = getTextoPreguntaCC(id);
-        doc.text(textoPregunta.substring(0, 70), 55, yStart + 18);
-        
-        if (respuesta.observacion) {
-          doc.fontSize(8).fillColor('#666666');
-          const obs = respuesta.observacion.length > 80 ? respuesta.observacion.substring(0, 80) + '...' : respuesta.observacion;
-          doc.text('Observacion: ' + obs, 55, yStart + 32);
-        }
-        
-        doc.moveDown(1.3);
-      }
-      doc.moveDown(0.5);
-    } else {
-      doc.fontSize(10).fillColor('#4caf50');
-      doc.text('Cuarto Caliente - Sin observaciones pendientes', 50, doc.y);
-      doc.moveDown(1);
-    }
-    
-    // ===== SECCION 2: DETALLE DE RECLAMOS =====
-    // TODOS los reclamos van aquí, en la hoja 2
-    if (reclamos.length > 0) {
-      if (doc.y > 600) doc.addPage();
-      
-      doc.fontSize(12).fillColor('#d32f2f').text('DETALLE DE RECLAMOS', { underline: true });
-      doc.moveDown(0.5);
-      doc.fontSize(9).fillColor('#888888');
-      doc.text('Total: ' + reclamos.length + ' reclamo(s) registrado(s)', 50, doc.y);
-      doc.moveDown(0.5);
-      
-      for (let i = 0; i < reclamos.length; i++) {
-        const reclamo = reclamos[i];
-        if (doc.y > 700) {
-          doc.addPage();
-          doc.fontSize(12).fillColor('#d32f2f').text('DETALLE DE RECLAMOS (continuacion)', { underline: true });
-          doc.moveDown(0.5);
-        }
-        
-        const yStart = doc.y;
-        doc.rect(45, yStart, 500, 65).fill('#fff5f5').stroke('#d32f2f');
-        
-        doc.fontSize(9).fillColor('#d32f2f');
-        doc.text('Reclamo #' + (i + 1) + ': ' + (reclamo.tipo || 'Sin tipo'), 55, yStart + 8);
-        
-        doc.fontSize(8).fillColor('#333333');
-        let yOffset = 24;
-        if (reclamo.telefono) {
-          doc.text('Telefono: ' + reclamo.telefono, 55, yStart + yOffset);
-          yOffset += 12;
-        }
-        if (reclamo.entregoSolucion) {
-          const colorSolucion = reclamo.entregoSolucion === 'Si' ? '#4caf50' : '#d32f2f';
-          doc.fillColor(colorSolucion);
-          doc.text('Solucion: ' + reclamo.entregoSolucion, 55, yStart + yOffset);
-          yOffset += 12;
-        }
-        if (reclamo.montoCompensacion && reclamo.montoCompensacion !== '0') {
-          doc.fillColor('#333333');
-          doc.text('Monto compensacion: $' + reclamo.montoCompensacion, 55, yStart + yOffset);
-        }
-        
-        doc.moveDown(1.5);
-      }
-    }
-    
-    // ===== SECCION 3: RESUMEN ESTADISTICO =====
-    if (doc.y > 550) doc.addPage();
-    
-    doc.fontSize(14).fillColor('#d32f2f').text('RESUMEN DE OBSERVACIONES', { align: 'center', underline: true });
-    doc.moveDown(1);
-    
-    const totalObservaciones = observacionesSC.length + observacionesCF.length + observacionesCC.length;
-    const totalReclamosCount = reclamos.length;
-    
-    // Tabla de resumen
-    const tableData = [
-      { seccion: 'Servicio al Cliente', cantidad: observacionesSC.length },
-      { seccion: 'Cuarto Frio', cantidad: observacionesCF.length },
-      { seccion: 'Cuarto Caliente', cantidad: observacionesCC.length },
-      { seccion: 'Reclamos', cantidad: totalReclamosCount },
-      { seccion: 'TOTAL', cantidad: totalObservaciones + totalReclamosCount },
+    const seccionesDetalle = [
+      {
+        key: 'servicioCliente', titulo: 'SERVICIO AL CLIENTE', data: revision.servicioCliente,
+        preguntas: getTextoPreguntaSC, obsGeneralCampo: 'observacionesPrincipales', tieneLaury: true,
+      },
+      {
+        key: 'cuartoFrio', titulo: 'CUARTO FRIO', data: revision.cuartoFrio,
+        preguntas: getTextoPreguntaCF, obsGeneralCampo: 'observacionesGenerales', tieneLaury: false,
+      },
+      {
+        key: 'cuartoCaliente', titulo: 'CUARTO CALIENTE', data: revision.cuartoCaliente,
+        preguntas: getTextoPreguntaCC, obsGeneralCampo: 'observacionesGenerales', tieneLaury: false,
+      },
     ];
-    
-    let yTabla = doc.y;
-    
-    // Encabezado
-    doc.rect(50, yTabla, 400, 20).fill('#d32f2f');
-    doc.rect(450, yTabla, 80, 20).fill('#d32f2f');
-    doc.fontSize(10).fillColor('#ffffff');
-    doc.text('SECCION', 60, yTabla + 4);
-    doc.text('CANTIDAD', 460, yTabla + 4);
-    yTabla += 20;
-    
-    // Filas
-    const colores = ['#2196f3', '#4caf50', '#ff9800', '#d32f2f', '#333333'];
-    for (let i = 0; i < tableData.length; i++) {
-      const row = tableData[i];
-      const esTotal = i === tableData.length - 1;
-      
-      doc.rect(50, yTabla, 400, 20).fill(esTotal ? '#f0f0f0' : '#fafafa');
-      doc.rect(450, yTabla, 80, 20).fill(esTotal ? '#f0f0f0' : '#fafafa');
-      
-      doc.fillColor('#333333');
-      doc.fontSize(esTotal ? 10 : 9);
-      doc.text(row.seccion, 60, yTabla + 4);
-      
-      doc.fillColor(esTotal ? '#333333' : colores[i]);
-      doc.text(row.cantidad.toString(), 470, yTabla + 4);
+
+    const hayAlgoQueMostrar = seccionesDetalle.some(s =>
+      (s.data?.[s.obsGeneralCampo] || '').trim() ||
+      (s.tieneLaury && (s.data?.derivacionLaury || '').trim()) ||
+      Object.values(s.data?.respuestas || {}).some(v => v.cumple === false)
+    ) || reclamos.length > 0;
+
+    if (hayAlgoQueMostrar) {
+      doc.addPage();
+      doc.fontSize(15).fillColor('#d32f2f').text('DETALLE DE OBSERVACIONES Y RECLAMOS', { align: 'center', underline: true });
+      doc.moveDown(0.3);
+      doc.fontSize(9).fillColor('#888888')
+        .text('Este informe detalla todas las observaciones, hallazgos y reclamos de la revision', { align: 'center' });
+      doc.moveDown(1);
+
+      for (const seccion of seccionesDetalle) {
+        if (doc.y > 680) doc.addPage();
+
+        doc.fontSize(12).fillColor('#2196f3').text(seccion.titulo, 50, doc.y, { underline: true });
+        doc.moveDown(0.4);
+
+        // Observación general (siempre se muestra, con fallback "Sin observaciones")
+        dibujarCajaObservacion(doc, 'Observación general', seccion.data?.[seccion.obsGeneralCampo], {
+          fondo: '#fff8e1', borde: '#ffca28', label: '#a17a00',
+        });
+
+        // Derivación a Laury (solo Servicio al Cliente)
+        if (seccion.tieneLaury) {
+          dibujarCajaObservacion(doc, 'Derivación a Laury', seccion.data?.derivacionLaury, {
+            fondo: '#ede7f6', borde: '#9575cd', label: '#5e35b1',
+          });
+        }
+
+        // Preguntas incumplidas con observación y/o fotos
+        const items = Object.entries(seccion.data?.respuestas || {})
+          .filter(([_, v]) => v.cumple === false);
+
+        if (items.length > 0) {
+          for (const [id, respuesta] of items) {
+            const fotos = (respuesta.fotos || []).filter(f => f);
+            const tieneObs = respuesta.observacion && respuesta.observacion.trim();
+            const textoPregunta = seccion.preguntas(id);
+
+            const alturaObs = tieneObs ? doc.heightOfString('Observación: ' + respuesta.observacion, { width: 480, fontSize: 8 }) : 0;
+            const alturaFotos = fotos.length > 0 ? 63 : 0;
+            const alturaCard = 34 + alturaObs + alturaFotos;
+
+            if (doc.y + alturaCard > 760) {
+              doc.addPage();
+              doc.fontSize(12).fillColor('#2196f3').text(seccion.titulo + ' (continuacion)', 50, doc.y, { underline: true });
+              doc.moveDown(0.4);
+            }
+
+            const yStart = doc.y;
+            doc.rect(45, yStart, 500, alturaCard).stroke('#dddddd');
+            doc.fontSize(9).fillColor('#d32f2f').text(id + ':', 55, yStart + 6);
+            doc.fontSize(8).fillColor('#333333').text(textoPregunta, 55, yStart + 18, { width: 480 });
+
+            let yCursor = yStart + 32;
+            if (tieneObs) {
+              doc.fontSize(8).fillColor('#666666')
+                .text('Observación: ' + respuesta.observacion.trim(), 55, yCursor, { width: 480 });
+              yCursor += alturaObs + 6;
+            }
+            if (fotos.length > 0) {
+              dibujarFilaFotos(doc, fotos, 55, yCursor);
+            }
+
+            doc.y = yStart + alturaCard + 8;
+          }
+        } else {
+          doc.fontSize(9).fillColor('#4caf50').text(seccion.titulo.charAt(0) + seccion.titulo.slice(1).toLowerCase() + ' - Sin preguntas incumplidas', 50, doc.y);
+          doc.moveDown(0.8);
+        }
+        doc.moveDown(0.6);
+      }
+
+      // ===== DETALLE DE RECLAMOS =====
+      if (reclamos.length > 0) {
+        if (doc.y > 620) doc.addPage();
+
+        doc.fontSize(12).fillColor('#d32f2f').text('DETALLE DE RECLAMOS', 50, doc.y, { underline: true });
+        doc.moveDown(0.3);
+        doc.fontSize(9).fillColor('#888888').text('Total: ' + reclamos.length + ' reclamo(s) registrado(s)', 50, doc.y);
+        doc.moveDown(0.5);
+
+        for (let i = 0; i < reclamos.length; i++) {
+          const reclamo = reclamos[i];
+          const tieneComentario = reclamo.comentario && reclamo.comentario.trim();
+          const fotoReclamo = resolverImagenParaPDF(reclamo.foto);
+          const alturaComentario = tieneComentario ? doc.heightOfString('Comentario: ' + reclamo.comentario, { width: 480, fontSize: 8 }) : 0;
+          const alturaFotoReclamo = fotoReclamo ? 63 : 0;
+          const alturaCard = 44 + alturaComentario + alturaFotoReclamo;
+
+          if (doc.y + alturaCard > 760) {
+            doc.addPage();
+            doc.fontSize(12).fillColor('#d32f2f').text('DETALLE DE RECLAMOS (continuacion)', 50, doc.y, { underline: true });
+            doc.moveDown(0.5);
+          }
+
+          const yStart = doc.y;
+          doc.rect(45, yStart, 500, alturaCard).fill('#fff5f5').stroke('#d32f2f');
+
+          doc.fontSize(9).fillColor('#d32f2f')
+            .text('Reclamo #' + (i + 1) + ': ' + (reclamo.tipo || 'Sin tipo'), 55, yStart + 8, { width: 380, continued: false });
+          doc.fontSize(8).fillColor('#888888')
+            .text(reclamo.fecha ? new Date(reclamo.fecha).toLocaleDateString('es-CL') : '', 460, yStart + 9, { width: 80, align: 'right' });
+
+          doc.fontSize(8).fillColor('#333333');
+          let yOffset = 24;
+          if (reclamo.telefono) {
+            doc.fillColor('#333333').text('Telefono: ' + reclamo.telefono, 55, yStart + yOffset);
+            yOffset += 12;
+          }
+          if (reclamo.entregoSolucion) {
+            const colorSolucion = reclamo.entregoSolucion === 'Sí' || reclamo.entregoSolucion === 'Si' ? '#4caf50' : '#d32f2f';
+            doc.fillColor(colorSolucion).text('Solucion: ' + reclamo.entregoSolucion, 55, yStart + yOffset);
+            yOffset += 12;
+          }
+          if (reclamo.montoCompensacion && reclamo.montoCompensacion !== '0') {
+            doc.fillColor('#333333').text('Monto compensacion: $' + reclamo.montoCompensacion, 55, yStart + yOffset);
+            yOffset += 12;
+          }
+          if (tieneComentario) {
+            doc.fillColor('#666666').text('Comentario: ' + reclamo.comentario.trim(), 55, yStart + yOffset, { width: 480 });
+            yOffset += alturaComentario + 4;
+          }
+          if (fotoReclamo) {
+            dibujarFilaFotos(doc, [reclamo.foto], 55, yStart + yOffset);
+          }
+
+          doc.y = yStart + alturaCard + 10;
+        }
+      }
+
+      // ===== RESUMEN ESTADISTICO =====
+      if (doc.y > 550) doc.addPage();
+
+      doc.fontSize(14).fillColor('#d32f2f').text('RESUMEN DE OBSERVACIONES', { align: 'center', underline: true });
+      doc.moveDown(1);
+
+      const conteos = seccionesDetalle.map(s => ({
+        seccion: s.titulo === 'SERVICIO AL CLIENTE' ? 'Servicio al Cliente' : (s.titulo === 'CUARTO FRIO' ? 'Cuarto Frio' : 'Cuarto Caliente'),
+        cantidad: Object.values(s.data?.respuestas || {}).filter(v => v.cumple === false).length,
+      }));
+      const totalObservaciones = conteos.reduce((a, c) => a + c.cantidad, 0);
+      const tableData = [...conteos, { seccion: 'Reclamos', cantidad: reclamos.length }, { seccion: 'TOTAL', cantidad: totalObservaciones + reclamos.length }];
+
+      let yTabla = doc.y;
+      doc.rect(50, yTabla, 400, 20).fill('#d32f2f');
+      doc.rect(450, yTabla, 80, 20).fill('#d32f2f');
+      doc.fontSize(10).fillColor('#ffffff');
+      doc.text('SECCION', 60, yTabla + 4);
+      doc.text('CANTIDAD', 460, yTabla + 4);
       yTabla += 20;
-    }
-    
-    doc.moveDown(1.5);
-    
-    // Grafico de barras
-    doc.fontSize(10).fillColor('#333333');
-    doc.text('Distribucion de observaciones por seccion:', 50, doc.y);
-    doc.moveDown(0.5);
-    
-    const maxCount = Math.max(...tableData.map(t => t.cantidad), 1);
-    const barMaxWidth = 400;
-    const coloresBarra = ['#2196f3', '#4caf50', '#ff9800', '#d32f2f'];
-    
-    for (let i = 0; i < tableData.length - 1; i++) {
-      const row = tableData[i];
-      const barWidth = Math.max((row.cantidad / maxCount) * barMaxWidth, 5);
-      doc.fillColor(coloresBarra[i % coloresBarra.length]);
-      doc.rect(50, doc.y, barWidth, 12).fill();
-      doc.fillColor('#333333');
-      doc.text(row.seccion + ': ' + row.cantidad, barWidth + 60, doc.y + 2);
-      doc.moveDown(0.9);
-    }
-    
-    doc.moveDown(1.5);
-    
-    // CONCLUSION
-    doc.fontSize(11).fillColor('#333333');
-    doc.text('CONCLUSION:', 50, doc.y);
-    doc.moveDown(0.3);
-    
-    const totalProblemas = totalObservaciones + totalReclamosCount;
-    let conclusion = '';
-    
-    if (totalProblemas === 0) {
-      conclusion = 'Excelente desempeno. No se registraron observaciones ni reclamos. Mantener el nivel de calidad.';
-    } else if (totalProblemas <= 5) {
-      conclusion = 'Desempeno aceptable. Se recomienda abordar las observaciones detectadas en el proximo periodo. Las areas con observaciones deben recibir retroalimentacion inmediata.';
-    } else if (totalProblemas <= 10) {
-      conclusion = 'Desempeno regular. Es necesario implementar acciones correctivas para las areas con mayor numero de observaciones. Se sugiere una reunion de seguimiento en 15 dias.';
-    } else {
-      conclusion = 'Desempeno critico. Se requiere una intervencion inmediata y un plan de mejora estructurado para las areas con multiples incumplimientos. Programar capacitacion urgente.';
-    }
-    
-    doc.fontSize(9).fillColor('#666666');
-    doc.text(conclusion, { width: 500, align: 'left' });
-    
-    // PIE DE PAGINA - HOJA 2
-    const footerY2 = doc.page.height - 40;
-    doc.fontSize(8).fillColor('#aaaaaa');
-    doc.text(
-      'Generado por: ' + (revision.creadoPor || 'Sistema') + ' | ' + new Date().toLocaleString('es-CL') + ' | Pagina 2',
-      50,
-      footerY2,
-      { align: 'center' }
-    );
 
-    } // fin if hay observaciones/reclamos/fotos
+      const colores = ['#2196f3', '#4caf50', '#ff9800', '#d32f2f', '#333333'];
+      for (let i = 0; i < tableData.length; i++) {
+        const row = tableData[i];
+        const esTotal = i === tableData.length - 1;
+        doc.rect(50, yTabla, 400, 20).fill(esTotal ? '#f0f0f0' : '#fafafa');
+        doc.rect(450, yTabla, 80, 20).fill(esTotal ? '#f0f0f0' : '#fafafa');
+        doc.fillColor('#333333').fontSize(esTotal ? 10 : 9).text(row.seccion, 60, yTabla + 4);
+        doc.fillColor(esTotal ? '#333333' : colores[i]).text(row.cantidad.toString(), 470, yTabla + 4);
+        yTabla += 20;
+      }
+      doc.y = yTabla + 10;
+      doc.moveDown(1);
 
-    // FINALIZAR
+      const totalProblemas = totalObservaciones + reclamos.length;
+      let conclusion = '';
+      if (totalProblemas === 0) {
+        conclusion = 'Excelente desempeno. No se registraron observaciones ni reclamos. Mantener el nivel de calidad.';
+      } else if (totalProblemas <= 5) {
+        conclusion = 'Desempeno aceptable. Se recomienda abordar las observaciones detectadas en el proximo periodo.';
+      } else if (totalProblemas <= 10) {
+        conclusion = 'Desempeno regular. Es necesario implementar acciones correctivas. Se sugiere una reunion de seguimiento en 15 dias.';
+      } else {
+        conclusion = 'Desempeno critico. Se requiere intervencion inmediata y un plan de mejora estructurado.';
+      }
+      doc.fontSize(11).fillColor('#333333').text('CONCLUSION:', 50, doc.y);
+      doc.moveDown(0.3);
+      doc.fontSize(9).fillColor('#666666').text(conclusion, { width: 500, align: 'left' });
+
+      const footerY2 = doc.page.height - 60;
+      doc.fontSize(8).fillColor('#aaaaaa').text(
+        'Generado por: ' + (revision.creadoPor || 'Sistema') + ' | ' + new Date().toLocaleString('es-CL') + ' | Pagina ' + doc.bufferedPageRange().count,
+        50, footerY2, { align: 'center' }
+      );
+    }
+
     doc.end();
-    doc.on('finish', resolve);
+    res.on('finish', resolve);
     doc.on('error', reject);
+    res.on('error', reject);
   });
 }
+
+// ---- Helpers de layout de la Hoja 1 ----
+
+function hexConAlpha(hex, alpha) {
+  // pdfkit no soporta alpha en fillAndStroke con hex directo para el fondo claro deseado,
+  // así que se mezcla el color con blanco para simular una versión "clara" del mismo tono.
+  const c = hex.replace('#', '');
+  const r = parseInt(c.substring(0, 2), 16), g = parseInt(c.substring(2, 4), 16), b = parseInt(c.substring(4, 6), 16);
+  const mix = (ch) => Math.round(ch + (255 - ch) * (1 - alpha));
+  return '#' + [mix(r), mix(g), mix(b)].map(v => v.toString(16).padStart(2, '0')).join('');
+}
+
+function dibujarTarjetasInfo(doc, items) {
+  const colW = 245, gap = 5, y = doc.y;
+  items.forEach((item, i) => {
+    const col = i % 2, row = Math.floor(i / 2);
+    const x = 50 + col * (colW + gap);
+    const yy = y + row * 40;
+    doc.roundedRect(x, yy, colW, 34, 4).fill('#f7f7f7');
+    doc.fontSize(7.5).fillColor('#888888').text(item.label, x + 10, yy + 6);
+    doc.fontSize(10.5).fillColor('#222222').text(String(item.value), x + 10, yy + 17, { width: colW - 20 });
+  });
+  doc.y = y + Math.ceil(items.length / 2) * 40;
+}
+
+function dibujarTarjetasKPI(doc, kpis) {
+  const colW = 158, gap = 10, y = doc.y, h = 62;
+  kpis.forEach((k, i) => {
+    const x = 50 + i * (colW + gap);
+    const sinDatos = k.items === 0;
+    const color = sinDatos ? '#999999' : getColorPorcentaje(k.pct);
+    doc.rect(x, y, colW, h).stroke('#eeeeee');
+    doc.fontSize(8).fillColor('#666666').text(k.nombre.toUpperCase(), x + 8, y + 8, { width: colW - 16 });
+    doc.fontSize(7).fillColor('#aaaaaa').text('peso ' + k.peso, x + 8, y + 18);
+    doc.fontSize(17).fillColor(color).text(sinDatos ? '—' : k.pct + '%', x + 8, y + 26);
+    const barW = colW - 16;
+    doc.rect(x + 8, y + 48, barW, 5).fill('#eeeeee');
+    if (!sinDatos) doc.rect(x + 8, y + 48, Math.max((k.pct / 100) * barW, 2), 5).fill(color);
+    doc.fontSize(7).fillColor('#999999').text(sinDatos ? 'Sin datos' : `${k.cumplidos}/${k.items}`, x + 8, y + 55);
+  });
+  doc.y = y + h;
+}
+
+function dibujarTarjetasAdmin(doc, admins) {
+  const colW = 245, gap = 5, y = doc.y, h = 24;
+  admins.forEach((a, i) => {
+    const x = 50 + i * (colW + gap);
+    doc.rect(x, y, colW, h).stroke('#eeeeee');
+    doc.fontSize(8.5).fillColor('#333333').text(a.nombre, x + 8, y + 7, { width: colW - 70 });
+    doc.fontSize(8).fillColor(a.presente ? '#2e7d32' : '#d32f2f')
+      .text(a.presente ? 'Presente' : 'Ausente', x + colW - 60, y + 7, { width: 55, align: 'right' });
+  });
+  doc.y = y + h;
+}
+
 
 // ============================================================
 // ENDPOINTS
@@ -782,6 +767,7 @@ router.get('/:id/pdf', verifyToken, async (req, res) => {
 
 router.post('/borrador', verifyToken, async (req, res) => {
   try {
+    req.body = procesarFotosEnObjeto(req.body); // red de seguridad: convierte a archivo cualquier base64 que haya quedado embebido
     let supervisorId = null;
     let supervisorNombre = req.user.nombre;
 
@@ -818,6 +804,7 @@ router.post('/borrador', verifyToken, async (req, res) => {
 // Actualizar borrador existente (auto-guardado)
 router.put('/borrador/:id', verifyToken, async (req, res) => {
   try {
+    req.body = procesarFotosEnObjeto(req.body);
     const borrador = await Revision.findOne({ _id: req.params.id, esBorrador: true });
     if (!borrador) {
       return res.status(404).json({ error: 'Borrador no encontrado' });
@@ -853,6 +840,7 @@ router.put('/borrador/:id', verifyToken, async (req, res) => {
 
 router.post('/', verifyToken, async (req, res) => {
   try {
+    req.body = procesarFotosEnObjeto(req.body);
     if (req.user.rol !== 'supervisor' && req.user.rol !== 'master' && req.user.rol !== 'gerencia') {
       return res.status(403).json({ error: 'No autorizado para crear revisiones' });
     }
@@ -899,6 +887,7 @@ router.post('/', verifyToken, async (req, res) => {
 
 router.put('/:id', verifyToken, async (req, res) => {
   try {
+    req.body = procesarFotosEnObjeto(req.body);
     const revision = await Revision.findById(req.params.id);
     if (!revision) {
       return res.status(404).json({ error: 'Revision no encontrada' });
@@ -935,6 +924,7 @@ router.put('/borrador/:id/finalizar', verifyToken, async (req, res) => {
   console.log('Usuario:', req.user.nombre, '(', req.user.rol, ')');
 
   try {
+    req.body = procesarFotosEnObjeto(req.body);
     const borrador = await Revision.findById(req.params.id);
     if (!borrador) {
       console.log('Borrador no encontrado:', req.params.id);
