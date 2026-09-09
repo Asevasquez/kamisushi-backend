@@ -441,6 +441,8 @@ router.get('/reclamos', verifyToken, async (req, res) => {
           localNombre: r.localId?.nombre || 'Sin local',
           supervisor: r.supervisorNombre || 'Sin supervisor',
           severidad: severidadReclamo(rec.tipo),
+          revisionId: r._id.toString(),
+          ordenEnRevision: idx,
         });
       });
     });
