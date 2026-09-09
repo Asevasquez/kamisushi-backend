@@ -15,7 +15,7 @@ function getTextoPreguntaSC(id) {
   const textos = {
     'SC-01': 'El local cumple con la presentacion y estado fisico del local',
     'SC-02': 'Hay presencia del encargado en el local',
-    'SC-03': 'No existen reclamos de clientes',
+    'SC-03': 'Utilizan correctamente los discursos de persuasion de agua PCM',
     'SC-04': 'Cumple con el protocolo de atencion al cliente',
     'SC-05': 'Cumple con la persuasion de promociones LUX - Presencial',
     'SC-06': 'Cumple con la persuasion de promociones LUX - Llamadas',
@@ -441,7 +441,7 @@ async function generarPDF(res, revision) {
             yOffset += 12;
           }
           if (reclamo.entregoSolucion) {
-            const colorSolucion = reclamo.entregoSolucion !== 'NO' ? '#4caf50' : '#d32f2f';
+            const colorSolucion = reclamo.entregoSolucion === 'Sí' || reclamo.entregoSolucion === 'Si' ? '#4caf50' : '#d32f2f';
             doc.fillColor(colorSolucion).text('Solucion: ' + reclamo.entregoSolucion, 55, yStart + yOffset);
             yOffset += 12;
           }
