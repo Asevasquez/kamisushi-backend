@@ -144,15 +144,21 @@ async function construirFiltro(req) {
 
   const query = { esBorrador: { $ne: true } };
 
+  // localId puede venir como un solo id o varios separados por coma (selección múltiple en el filtro)
+  const localIdsSolicitados = localId
+    ? String(localId).split(',').map(s => s.trim()).filter(Boolean)
+    : [];
+
   if (permitidos) {
     if (permitidos.length === 0) return { query: null };
-    if (localId && !permitidos.includes(localId.toString())) {
-      return { query: null, sinAcceso: true };
+    if (localIdsSolicitados.length > 0) {
+      const sinAcceso = localIdsSolicitados.some(id => !permitidos.includes(id));
+      if (sinAcceso) return { query: null, sinAcceso: true };
     }
-    const base = localId ? [localId] : permitidos;
+    const base = localIdsSolicitados.length > 0 ? localIdsSolicitados : permitidos;
     query.localId = { $in: idsFlexibles(base) };
-  } else if (localId) {
-    try { query.localId = new mongoose.Types.ObjectId(localId); } catch (e) { query.localId = localId; }
+  } else if (localIdsSolicitados.length > 0) {
+    query.localId = { $in: idsFlexibles(localIdsSolicitados) };
   }
 
   if (supervisorId) {
@@ -428,8 +434,9 @@ router.get('/reclamos', verifyToken, async (req, res) => {
           tipo: rec.tipo || 'SIN TIPO',
           fecha: rec.fecha || r.fechaRevision,
           telefono: rec.telefono || '',
-          entregoSolucion: rec.entregoSolucion || 'No',
+          entregoSolucion: rec.entregoSolucion || 'NO',
           montoCompensacion: rec.montoCompensacion || '0',
+          comentario: rec.comentario || '',
           localId: (r.localId?._id || r.localId)?.toString(),
           localNombre: r.localId?.nombre || 'Sin local',
           supervisor: r.supervisorNombre || 'Sin supervisor',
@@ -441,7 +448,7 @@ router.get('/reclamos', verifyToken, async (req, res) => {
     const totalReclamos = reclamos.length;
     if (totalReclamos === 0) return res.json(reclamosVacio());
 
-    const resueltos = reclamos.filter(r => r.entregoSolucion === 'Sí').length;
+    const resueltos = reclamos.filter(r => r.entregoSolucion !== 'NO').length;
     const sinSolucion = totalReclamos - resueltos;
     const tiposDistintos = new Set(reclamos.map(r => r.tipo)).size;
     const compensaciones = reclamos.reduce((s, r) => s + (parseFloat(r.montoCompensacion) || 0), 0);
@@ -450,7 +457,7 @@ router.get('/reclamos', verifyToken, async (req, res) => {
     reclamos.forEach(r => {
       if (!porTipo[r.tipo]) porTipo[r.tipo] = { tipo: r.tipo, total: 0, resueltos: 0 };
       porTipo[r.tipo].total++;
-      if (r.entregoSolucion === 'Sí') porTipo[r.tipo].resueltos++;
+      if (r.entregoSolucion !== 'NO') porTipo[r.tipo].resueltos++;
     });
     const tiposFrecuencia = Object.values(porTipo).sort((a, b) => b.total - a.total);
     const resolucionPorTipo = tiposFrecuencia.map(t => ({
@@ -462,7 +469,7 @@ router.get('/reclamos', verifyToken, async (req, res) => {
     reclamos.forEach(r => {
       if (!porLocal[r.localNombre]) porLocal[r.localNombre] = { local: r.localNombre, total: 0, sinSolucion: 0 };
       porLocal[r.localNombre].total++;
-      if (r.entregoSolucion !== 'Sí') porLocal[r.localNombre].sinSolucion++;
+      if (r.entregoSolucion === 'NO') porLocal[r.localNombre].sinSolucion++;
     });
     const reclamosPorLocal = Object.values(porLocal)
       .map(l => ({ ...l, resolucionPct: l.total > 0 ? ((l.total - l.sinSolucion) / l.total) * 100 : 0 }))

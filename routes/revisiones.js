@@ -441,7 +441,7 @@ async function generarPDF(res, revision) {
             yOffset += 12;
           }
           if (reclamo.entregoSolucion) {
-            const colorSolucion = reclamo.entregoSolucion === 'Sí' || reclamo.entregoSolucion === 'Si' ? '#4caf50' : '#d32f2f';
+            const colorSolucion = reclamo.entregoSolucion !== 'NO' ? '#4caf50' : '#d32f2f';
             doc.fillColor(colorSolucion).text('Solucion: ' + reclamo.entregoSolucion, 55, yStart + yOffset);
             yOffset += 12;
           }
