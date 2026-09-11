@@ -686,8 +686,12 @@ router.get('/', verifyToken, async (req, res) => {
       query.fechaRevision = {};
       if (fechaInicio) query.fechaRevision.$gte = new Date(fechaInicio);
       if (fechaFin) {
-        const finDelDia = new Date(fechaFin);
-        finDelDia.setHours(23, 59, 59, 999);
+        // El cliente ya manda el instante exacto de la medianoche LOCAL de ese día
+        // (via toISOString()). Sumar 24h-1ms a ESE instante cubre el día completo
+        // sin reinterpretar horas en la zona horaria del servidor (que puede ser
+        // distinta a la del usuario y cortar las últimas horas del día).
+        const inicioDelDia = new Date(fechaFin);
+        const finDelDia = new Date(inicioDelDia.getTime() + 24 * 60 * 60 * 1000 - 1);
         query.fechaRevision.$lte = finDelDia;
       }
     }
