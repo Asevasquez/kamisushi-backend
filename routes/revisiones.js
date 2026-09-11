@@ -636,6 +636,8 @@ router.get('/estadisticas-por-local', verifyToken, async (req, res) => {
         id: rev._id,
         fecha: rev.fechaRevision,
         porcentajeTotal: rev.porcentajeTotal || 0,
+        supervisor: rev.supervisorNombre || '',
+        geolocalizacion: rev.geolocalizacion || null,
       });
       estadisticasPorLocal[nombreLocal].totalRevisiones++;
     });
