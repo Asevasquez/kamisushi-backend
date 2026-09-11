@@ -424,7 +424,7 @@ router.get('/reclamos', verifyToken, async (req, res) => {
     if (sinAcceso) return res.status(403).json({ error: 'No tienes acceso a ese local' });
     if (!query) return res.json(reclamosVacio());
 
-    const revisiones = await Revision.find(query).populate('localId', 'nombre');
+    const revisiones = await Revision.find(query).populate('localId', 'nombre codigoExterno');
 
     const reclamos = [];
     revisiones.forEach(r => {
@@ -433,12 +433,14 @@ router.get('/reclamos', verifyToken, async (req, res) => {
           id: rec.id || `${r._id}-${idx}`,
           tipo: rec.tipo || 'SIN TIPO',
           fecha: rec.fecha || r.fechaRevision,
+          fechaRevision: r.fechaRevision,
           telefono: rec.telefono || '',
           entregoSolucion: rec.entregoSolucion || 'NO',
           montoCompensacion: rec.montoCompensacion || '0',
           comentario: rec.comentario || '',
           localId: (r.localId?._id || r.localId)?.toString(),
           localNombre: r.localId?.nombre || 'Sin local',
+          localCodigo: r.localId?.codigoExterno || '',
           supervisor: r.supervisorNombre || 'Sin supervisor',
           severidad: severidadReclamo(rec.tipo),
           revisionId: r._id.toString(),

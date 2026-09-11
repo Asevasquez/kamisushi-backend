@@ -685,7 +685,11 @@ router.get('/', verifyToken, async (req, res) => {
     if (fechaInicio || fechaFin) {
       query.fechaRevision = {};
       if (fechaInicio) query.fechaRevision.$gte = new Date(fechaInicio);
-      if (fechaFin) query.fechaRevision.$lte = new Date(fechaFin);
+      if (fechaFin) {
+        const finDelDia = new Date(fechaFin);
+        finDelDia.setHours(23, 59, 59, 999);
+        query.fechaRevision.$lte = finDelDia;
+      }
     }
 
     // Filtro explícito de borrador (ej. HomeScreen pide solo los pendientes de finalizar)
