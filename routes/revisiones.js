@@ -173,10 +173,22 @@ function dibujarCajaObservacion(doc, label, texto, colores) {
   const esLaury = label.toLowerCase().includes('laury');
   const contenido = tieneTexto ? texto.trim() : (esLaury ? 'Sin derivación' : 'Sin observaciones');
 
-  const yStart = doc.y;
   const alturaTexto = doc.heightOfString(contenido, { width: 470, fontSize: 9.5 });
   const alturaCaja = 28 + alturaTexto;
 
+  // Si la caja completa no alcanza a entrar en lo que queda de la página
+  // actual, se pasa a una página nueva ANTES de dibujar nada. Sin esto, el
+  // recuadro se dibuja en la página actual con la altura calculada, pero el
+  // texto (que PDFKit desborda automáticamente a la página siguiente cuando
+  // es muy largo) termina apareciendo separado del recuadro que lo debía
+  // contener — y el cursor (doc.y) queda con un valor que ya no corresponde
+  // a la página real donde terminó el contenido, dejando páginas en blanco.
+  const espacioDisponible = doc.page.height - doc.page.margins.bottom - doc.y;
+  if (alturaCaja > espacioDisponible) {
+    doc.addPage();
+  }
+
+  const yStart = doc.y;
   doc.roundedRect(50, yStart, 495, alturaCaja, 4).fillAndStroke(colores.fondo, colores.borde);
   doc.fontSize(8).fillColor(colores.label).text(label.toUpperCase(), 60, yStart + 8);
   doc.fontSize(9.5).fillColor(tieneTexto ? '#333333' : '#999999');
@@ -849,6 +861,7 @@ router.put('/borrador/:id', verifyToken, async (req, res) => {
 });
 
 router.post('/', verifyToken, async (req, res) => {
+  console.log('Creando revisión directa. Local:', req.body.localId, '| Usuario:', req.user.nombre, '(', req.user.rol, ')');
   try {
     req.body = procesarFotosEnObjeto(req.body);
     if (req.user.rol !== 'supervisor' && req.user.rol !== 'master' && req.user.rol !== 'gerencia') {
@@ -878,6 +891,7 @@ router.post('/', verifyToken, async (req, res) => {
       porcentajeTotal: Number(req.body.porcentajeTotal) || 0,
       categoria: req.body.categoria || '',
       comentariosGenerales: req.body.comentariosGenerales || '',
+      geolocalizacion: req.body.geolocalizacion || undefined,
       creadoPor: req.user.nombre,
       creadoPorId: req.user.id,
       creadoEn: new Date(),
@@ -888,9 +902,10 @@ router.post('/', verifyToken, async (req, res) => {
 
     const revision = new Revision(revisionData);
     const savedRevision = await revision.save();
+    console.log('Revisión creada con éxito:', savedRevision._id.toString());
     res.status(201).json(savedRevision);
   } catch (error) {
-    console.error('Error:', error);
+    console.error('Error creando revisión:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -915,6 +930,7 @@ router.put('/:id', verifyToken, async (req, res) => {
       porcentajeTotal: Number(req.body.porcentajeTotal) || revision.porcentajeTotal,
       categoria: req.body.categoria || revision.categoria,
       comentariosGenerales: req.body.comentariosGenerales || revision.comentariosGenerales,
+      geolocalizacion: req.body.geolocalizacion || revision.geolocalizacion,
       supervisorNombre: req.user.nombre,
       modificadoPor: req.user.nombre,
       modificadoPorId: req.user.id,
