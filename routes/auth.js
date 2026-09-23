@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const jwt = require('jsonwebtoken');
 const Usuario = require('../models/Usuario');
+const { verifyToken } = require('../middleware/auth');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-key';
 
@@ -97,6 +98,14 @@ router.post('/change-password', async (req, res) => {
     console.error('Error en change-password:', error);
     res.status(500).json({ error: error.message });
   }
+});
+
+// Ping liviano para confirmar que el token todavía es válido, sin hacer nada
+// más. Se usa desde la app móvil ANTES de intentar guardar una revisión
+// larga (subir fotos, etc.), para avisar temprano si la sesión expiró — en
+// vez de que el usuario se entere recién después de todo ese trabajo.
+router.get('/verificar', verifyToken, (req, res) => {
+  res.json({ ok: true, usuario: req.user.nombre });
 });
 
 module.exports = router;
