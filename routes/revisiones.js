@@ -995,6 +995,34 @@ router.put('/borrador/:id/finalizar', verifyToken, async (req, res) => {
   }
 });
 
+// Pasar un borrador a Finalizada directamente desde el panel web, sin pasar
+// por la app móvil. A diferencia de la ruta de arriba (pensada para cuando
+// la app manda TODOS los datos de la revisión), esta solo cambia el estado
+// — no toca localId/supervisorId/supervisorNombre ni ningún otro campo, para
+// no perder la atribución original de quién hizo la revisión.
+router.put('/:id/marcar-finalizada', verifyToken, async (req, res) => {
+  if (['administrador', 'supervisor'].includes(req.user.rol)) {
+    return res.status(403).json({ error: 'No tienes permiso para finalizar revisiones desde el panel' });
+  }
+  try {
+    const revision = await Revision.findById(req.params.id);
+    if (!revision) return res.status(404).json({ error: 'Revisión no encontrada' });
+    if (!revision.esBorrador) return res.status(400).json({ error: 'Esta revisión ya está finalizada' });
+
+    revision.esBorrador = false;
+    revision.modificadoPor = req.user.nombre;
+    revision.modificadoPorId = req.user.id;
+    revision.modificadoEn = new Date();
+    await revision.save();
+
+    console.log(`Revisión ${req.params.id} pasada a Finalizada desde el panel por ${req.user.nombre} (${req.user.rol})`);
+    res.json(revision);
+  } catch (error) {
+    console.error('Error marcando revisión como finalizada:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.delete('/:id', verifyToken, async (req, res) => {
   try {
     const revision = await Revision.findById(req.params.id);
