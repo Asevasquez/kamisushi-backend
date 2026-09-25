@@ -599,18 +599,9 @@ router.get('/estadisticas-por-local', verifyToken, async (req, res) => {
   try {
     let query = {};
 
-    if (req.user.rol === 'supervisor') {
-      // Tolerar tanto string como ObjectId para compatibilidad con revisiones antiguas
-      try {
-        query.$or = [
-          { supervisorId: req.user.id },
-          { supervisorId: new mongoose.Types.ObjectId(req.user.id) }
-        ];
-      } catch(e) {
-        query.supervisorId = req.user.id;
-      }
-    }
-
+    // Los supervisores ahora ven las estadísticas de todos los locales/
+    // supervisores, igual que master y gerencia — consistente con que ya
+    // pueden ver el listado completo de revisiones.
     if (req.user.rol === 'administrador') {
       const localesAsignados = req.user.localesAsignados?.map(l => l._id?.toString() || l) || [];
       if (localesAsignados.length > 0) {
@@ -673,9 +664,10 @@ router.get('/', verifyToken, async (req, res) => {
     let query = {};
     let localesPermitidos = null; // null = sin restricción (master/gerencia)
 
-    if (req.user.rol === 'supervisor') {
-      query.supervisorId = req.user.id;
-    } else if (req.user.rol === 'administrador') {
+    // Los supervisores ahora pueden ver las revisiones de todos los locales/
+    // supervisores, igual que master y gerencia — antes quedaban limitados
+    // a solo las propias.
+    if (req.user.rol === 'administrador') {
       const asignados = (req.user.localesAsignados || []).map(l => (l._id || l).toString());
       if (asignados.length === 0) return res.json({ data: [], total: 0 });
       localesPermitidos = asignados;
@@ -691,8 +683,7 @@ router.get('/', verifyToken, async (req, res) => {
       query.localId = { $in: localesPermitidos.map(id => new mongoose.Types.ObjectId(id)) };
     }
 
-    // El supervisor no puede pedir revisiones de otro supervisor
-    if (supervisorId && req.user.rol !== 'supervisor') {
+    if (supervisorId) {
       query.supervisorId = new mongoose.Types.ObjectId(supervisorId);
     }
 

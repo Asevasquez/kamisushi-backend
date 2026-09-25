@@ -5,14 +5,21 @@ const Usuario = require('../models/Usuario');
 const { verifyToken, authorize } = require('../middleware/auth');
 
 // Obtener todos los supervisores (desde usuarios con rol supervisor)
+// Se permite también al rol "supervisor" (no solo master/gerencia) para que
+// puedan filtrar por sus colegas en el listado de revisiones.
 router.get('/', verifyToken, async (req, res) => {
-  if (req.user.rol !== 'master' && req.user.rol !== 'gerencia') {
+  if (!['master', 'gerencia', 'supervisor'].includes(req.user.rol)) {
     return res.status(403).json({ error: 'Acceso denegado' });
   }
 
   try {
-    const supervisores = await Usuario.find({ rol: 'supervisor', activo: true })
-      .select('nombre email telefono fechaContratacion activo localesAsignados');
+    // Para supervisores viendo a sus colegas, solo el nombre (lo único que
+    // necesita el filtro de revisiones) — el correo/teléfono/fecha de
+    // contratación se reservan para master/gerencia.
+    const campos = req.user.rol === 'supervisor'
+      ? 'nombre'
+      : 'nombre email telefono fechaContratacion activo localesAsignados';
+    const supervisores = await Usuario.find({ rol: 'supervisor', activo: true }).select(campos);
     res.json(supervisores);
   } catch (error) {
     console.error('Error al obtener supervisores:', error);
