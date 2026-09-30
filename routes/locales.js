@@ -14,9 +14,21 @@ function limpiarCodigoExterno(body) {
   return body;
 }
 
-// Rutas públicas
-router.get('/activos', async (req, res) => {
+// Antes era pública (sin verifyToken) — ahora requiere sesión para poder
+// saber quién pregunta y filtrar según sus locales asignados. La app
+// siempre tiene un token por este punto (se usa ya logueado, al crear una
+// revisión), así que esto no debería afectar el flujo normal.
+router.get('/activos', verifyToken, async (req, res) => {
   try {
+    // Administrador y Supervisor Interno solo ven sus locales asignados al
+    // elegir dónde hacer una revisión — el resto de los roles (supervisor,
+    // gerencia, master, auditor) sigue viendo todos los locales activos,
+    // igual que hasta ahora.
+    if (['administrador', 'supervisorinterno'].includes(req.user.rol)) {
+      const asignados = (req.user.localesAsignados || []).map(l => l._id || l);
+      const locales = await Local.find({ _id: { $in: asignados }, activo: true });
+      return res.json(locales);
+    }
     const locales = await Local.find({ activo: true });
     res.json(locales);
   } catch (error) {

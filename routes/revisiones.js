@@ -602,7 +602,7 @@ router.get('/estadisticas-por-local', verifyToken, async (req, res) => {
     // Los supervisores ahora ven las estadísticas de todos los locales/
     // supervisores, igual que master y gerencia — consistente con que ya
     // pueden ver el listado completo de revisiones.
-    if (req.user.rol === 'administrador') {
+    if (['administrador', 'supervisorinterno'].includes(req.user.rol)) {
       const localesAsignados = req.user.localesAsignados?.map(l => l._id?.toString() || l) || [];
       if (localesAsignados.length > 0) {
         const localIds = localesAsignados.flatMap(id => {
@@ -612,6 +612,12 @@ router.get('/estadisticas-por-local', verifyToken, async (req, res) => {
       } else {
         return res.json({});
       }
+    }
+
+    // SupervisorInterno además solo ve sus propias revisiones, no las de
+    // otros supervisores que también trabajen en sus locales asignados.
+    if (req.user.rol === 'supervisorinterno') {
+      query.supervisorId = new mongoose.Types.ObjectId(req.user.id);
     }
 
     const now = new Date();
@@ -667,7 +673,7 @@ router.get('/', verifyToken, async (req, res) => {
     // Los supervisores ahora pueden ver las revisiones de todos los locales/
     // supervisores, igual que master y gerencia — antes quedaban limitados
     // a solo las propias.
-    if (req.user.rol === 'administrador') {
+    if (['administrador', 'supervisorinterno'].includes(req.user.rol)) {
       const asignados = (req.user.localesAsignados || []).map(l => (l._id || l).toString());
       if (asignados.length === 0) return res.json({ data: [], total: 0 });
       localesPermitidos = asignados;
@@ -685,6 +691,14 @@ router.get('/', verifyToken, async (req, res) => {
 
     if (supervisorId) {
       query.supervisorId = new mongoose.Types.ObjectId(supervisorId);
+    }
+
+    // SupervisorInterno: además de limitarse a sus locales asignados (arriba),
+    // solo puede ver SUS PROPIAS revisiones — esto se fuerza acá, pisando
+    // cualquier filtro de supervisorId que el cliente haya mandado, para que
+    // no pueda pedir explícitamente las revisiones de otro supervisor.
+    if (req.user.rol === 'supervisorinterno') {
+      query.supervisorId = new mongoose.Types.ObjectId(req.user.id);
     }
 
     if (fechaInicio || fechaFin) {
@@ -784,7 +798,7 @@ router.post('/borrador', verifyToken, async (req, res) => {
     let supervisorId = null;
     let supervisorNombre = req.user.nombre;
 
-    if (req.user.rol === 'supervisor') {
+    if (['supervisor', 'supervisorinterno'].includes(req.user.rol)) {
       supervisorId = req.user.id;
     } else if (req.body.supervisorId) {
       supervisorId = req.body.supervisorId;
@@ -862,7 +876,7 @@ router.post('/', verifyToken, async (req, res) => {
     let supervisorId = null;
     let supervisorNombre = req.user.nombre;
 
-    if (req.user.rol === 'supervisor') {
+    if (['supervisor', 'supervisorinterno'].includes(req.user.rol)) {
       supervisorId = req.user.id;
     } else if (req.body.supervisorId) {
       supervisorId = req.body.supervisorId;
@@ -951,7 +965,7 @@ router.put('/borrador/:id/finalizar', verifyToken, async (req, res) => {
     let supervisorId = null;
     let supervisorNombre = req.user.nombre;
 
-    if (req.user.rol === 'supervisor') {
+    if (['supervisor', 'supervisorinterno'].includes(req.user.rol)) {
       supervisorId = req.user.id;
     } else if (req.body.supervisorId) {
       supervisorId = req.body.supervisorId;
@@ -1026,7 +1040,7 @@ router.delete('/:id', verifyToken, async (req, res) => {
       return res.json({ message: 'Revision eliminada' });
     }
 
-    if (req.user.rol === 'supervisor' && revision.supervisorId?.toString() === req.user.id) {
+    if (['supervisor', 'supervisorinterno'].includes(req.user.rol) && revision.supervisorId?.toString() === req.user.id) {
       await revision.deleteOne();
       return res.json({ message: 'Revision eliminada' });
     }

@@ -114,7 +114,7 @@ function severidadReclamo(tipo) {
 async function alcanceLocales(req) {
   if (req.user.rol === 'master' || req.user.rol === 'gerencia') return null;
 
-  if (req.user.rol === 'administrador') {
+  if (['administrador', 'supervisorinterno'].includes(req.user.rol)) {
     return (req.user.localesAsignados || []).map(l => (l._id || l).toString());
   }
 
@@ -161,13 +161,28 @@ async function construirFiltro(req) {
     query.localId = { $in: idsFlexibles(localIdsSolicitados) };
   }
 
+  // supervisorId y categoria también pueden venir como uno o varios separados
+  // por coma (selección múltiple en el filtro, igual que localId)
   if (supervisorId) {
-    const orClauses = [{ supervisorId }];
-    try { orClauses.push({ supervisorId: new mongoose.Types.ObjectId(supervisorId) }); } catch (e) {}
-    query.$or = orClauses;
+    const supervisorIdsSolicitados = String(supervisorId).split(',').map(s => s.trim()).filter(Boolean);
+    if (supervisorIdsSolicitados.length > 0) {
+      query.supervisorId = { $in: idsFlexibles(supervisorIdsSolicitados) };
+    }
   }
 
-  if (categoria) query.categoria = categoria;
+  if (categoria) {
+    const categoriasSolicitadas = String(categoria).split(',').map(s => s.trim()).filter(Boolean);
+    if (categoriasSolicitadas.length > 0) {
+      query.categoria = { $in: categoriasSolicitadas };
+    }
+  }
+
+  // SupervisorInterno: además de sus locales asignados (arriba), solo ve
+  // sus propias revisiones — se fuerza acá, pisando cualquier filtro de
+  // supervisorId que el cliente haya mandado.
+  if (req.user.rol === 'supervisorinterno') {
+    query.supervisorId = { $in: idsFlexibles([req.user.id]) };
+  }
 
   if (mes) {
     const [anio, mesNum] = mes.split('-').map(Number);
