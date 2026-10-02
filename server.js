@@ -39,6 +39,7 @@ app.use('/api/estadisticas', estadisticasRoutes); // ← AGREGAR
 app.use('/api/upload', uploadRoutes); // ← AGREGAR
 app.use('/api/dashboard-supervision', require('./routes/dashboardSupervision'));
 app.use('/api/auditorias', require('./routes/auditorias'));
+app.use('/api/mentorias', require('./routes/mentorias'));
 
 // Ruta de prueba
 app.get('/api/test', (req, res) => {
