@@ -90,6 +90,11 @@ const mentoriaSchema = new Schema(
     // único es sparse y un null en cada borrador chocaría entre sí.
     numeroInforme: { type: String },
 
+    // Id generado en el celular al iniciar la mentoría. Si la cola offline
+    // reenvía algo que el servidor ya guardó (la respuesta se perdió), se
+    // devuelve la existente en vez de crear un duplicado.
+    clienteId: { type: String },
+
     localId: { type: Schema.Types.ObjectId, ref: 'Local', required: true },
     localNombre: { type: String, default: '' },
 
@@ -133,5 +138,6 @@ mentoriaSchema.index({ mentorId: 1, fechaMentoria: -1 });
 mentoriaSchema.index({ esBorrador: 1, fechaMentoria: -1 });
 mentoriaSchema.index({ 'compromisos.estado': 1 });
 mentoriaSchema.index({ numeroInforme: 1 }, { unique: true, sparse: true });
+mentoriaSchema.index({ clienteId: 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model('Mentoria', mentoriaSchema);

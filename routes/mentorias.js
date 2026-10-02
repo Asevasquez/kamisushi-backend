@@ -385,11 +385,34 @@ router.post('/', soloRoles(ROLES_CREAN), async (req, res) => {
     const local = await Local.findById(localId).select('nombre');
     if (!local) return res.status(404).json({ error: 'El local no existe' });
 
+    // Reenvío de la cola offline: si ya existe, se devuelve tal cual (sin duplicar)
+    const clienteId = req.body.clienteId ? String(req.body.clienteId).slice(0, 80) : undefined;
+    if (clienteId) {
+      const existente = await Mentoria.findOne({ clienteId });
+      if (existente) {
+        if (!esDuenoOGlobal(req.user, existente)) return res.status(409).json({ error: 'Identificador de mentoría duplicado' });
+        // Upsert del borrador: el guardado automático y la cola offline
+        // mandan el mismo clienteId una y otra vez; se actualiza el mismo
+        // documento. Una mentoría ya finalizada no se vuelve a tocar.
+        if (existente.esBorrador) {
+          aplicarCamposEditables(existente, req.body);
+          Object.assign(existente, calcularPuntajes(existente.preguntas));
+          if (req.body.esBorrador === false) {
+            const errores = await finalizar(existente, req.user);
+            if (errores) return res.status(400).json({ error: 'La mentoría está incompleta', detalles: errores });
+          }
+          await existente.save();
+        }
+        return res.status(200).json(paraUsuario(existente, req.user));
+      }
+    }
+
     const m = new Mentoria({
       localId: local._id,
       localNombre: local.nombre,
       mentorId: oid(idUsuario(req.user)),
       mentorNombre: req.user.nombre,
+      clienteId,
       fechaMentoria: req.body.fechaMentoria ? new Date(req.body.fechaMentoria) : new Date(),
       esBorrador: true,
     });
