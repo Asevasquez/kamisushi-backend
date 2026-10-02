@@ -225,6 +225,8 @@ function rangoFechas(q) {
   return Object.keys(r).length ? r : null;
 }
 
+const fmtFechaLog = (d) => (d ? new Date(d).toISOString().slice(0, 10) : '—');
+
 const validarId = (req, res, next) => {
   if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Id inválido' });
   next();
@@ -385,6 +387,10 @@ router.post('/', soloRoles(ROLES_CREAN), async (req, res) => {
   try {
     const { localId } = req.body;
     if (!localId || !mongoose.isValidObjectId(localId)) return res.status(400).json({ error: 'Falta el local' });
+    // El mentor solo trabaja en los locales que tiene asignados (gerencia/master: todos)
+    if (req.user.rol === 'mentor' && !idsLocalesAsignados(req.user).includes(String(localId))) {
+      return res.status(403).json({ error: 'Este local no está asignado a tu usuario' });
+    }
     const local = await Local.findById(localId).select('nombre');
     if (!local) return res.status(404).json({ error: 'El local no existe' });
 
@@ -487,15 +493,19 @@ router.put('/:id/finalizar', validarId, soloRoles(ROLES_CREAN), async (req, res)
   }
 });
 
-// DELETE /:id — solo borradores
-router.delete('/:id', validarId, soloRoles(ROLES_CREAN), async (req, res) => {
+// DELETE /:id — eliminar una mentoría (borrador o finalizada). Solo gerencia y master.
+// Se elimina con sus compromisos y evidencias; queda registrado en el log del servidor.
+router.delete('/:id', validarId, soloRoles(ROLES_GLOBALES), async (req, res) => {
   try {
     const m = await Mentoria.findById(req.params.id);
-    if (!m || !esDuenoOGlobal(req.user, m)) return res.status(404).json({ error: 'Mentoría no encontrada' });
-    if (!m.esBorrador) return res.status(400).json({ error: 'Solo se pueden eliminar borradores' });
+    if (!m) return res.status(404).json({ error: 'Mentoría no encontrada' });
     await m.deleteOne();
+    console.log('Mentoría ELIMINADA:', m._id.toString(), m.numeroInforme || '(borrador)', '|', m.localNombre,
+      '|', fmtFechaLog(m.fechaMentoria), '| Mentor:', m.mentorNombre, '| Compromisos:', (m.compromisos || []).length,
+      '| Por:', req.user.nombre, `(${req.user.rol})`);
     res.json({ ok: true });
   } catch (error) {
+    console.error('Error eliminando mentoría:', error);
     res.status(500).json({ error: error.message });
   }
 });

@@ -24,7 +24,7 @@ router.get('/activos', verifyToken, async (req, res) => {
     // elegir dónde hacer una revisión — el resto de los roles (supervisor,
     // gerencia, master, auditor) sigue viendo todos los locales activos,
     // igual que hasta ahora.
-    if (['administrador', 'supervisorinterno'].includes(req.user.rol)) {
+if (['administrador', 'supervisorinterno', 'mentor'].includes(req.user.rol)) {
       const asignados = (req.user.localesAsignados || []).map(l => l._id || l);
       const locales = await Local.find({ _id: { $in: asignados }, activo: true });
       return res.json(locales);
