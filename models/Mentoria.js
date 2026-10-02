@@ -44,7 +44,7 @@ const historialSchema = new Schema(
     fecha: { type: Date, default: Date.now },
     accion: {
       type: String,
-      enum: ['creado', 'evidencia_enviada', 'correccion_solicitada', 'aprobado'],
+      enum: ['creado', 'evidencia_enviada', 'correccion_solicitada', 'aprobado', 'accion_mentor_realizada'],
       required: true,
     },
     usuarioId: { type: Schema.Types.ObjectId, ref: 'Usuario' },
@@ -82,6 +82,12 @@ const compromisoSchema = new Schema({
   evidencias: [evidenciaSchema],
   historial: [historialSchema],
   fechaCierre: { type: Date, default: null },
+
+  // Tarea del mentor (su "acción del mentor"): el mentor la marca como
+  // realizada y el administrador ve si se cumplió.
+  accionMentorEstado: { type: String, enum: ['pendiente', 'realizada'], default: 'pendiente' },
+  accionMentorRealizadaEn: { type: Date, default: null },
+  accionMentorComentario: { type: String, default: '' },
 });
 
 const mentoriaSchema = new Schema(

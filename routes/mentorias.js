@@ -334,11 +334,14 @@ router.get('/compromisos', async (req, res) => {
       alumnoNombre: m.alumnoNombre,
       fechaMentoria: m.fechaMentoria,
       ...c,
+      accionMentorEstado: c.accionMentorEstado || 'pendiente', // documentos anteriores al campo
       vencido: estaVencido(c),
     })));
 
     const { estado } = req.query;
-    if (estado === 'vencido') lista = lista.filter((c) => c.vencido);
+    // "pendientes": todo lo que todavía requiere algo del administrador o del mentor
+    if (estado === 'pendientes') lista = lista.filter((c) => c.estado !== 'cerrado' || c.accionMentorEstado !== 'realizada');
+    else if (estado === 'vencido') lista = lista.filter((c) => c.vencido);
     else if (['abierto', 'en_revision', 'cerrado'].includes(estado)) lista = lista.filter((c) => c.estado === estado);
 
     lista.sort((a, b) => new Date(a.fechaCompromiso || 0) - new Date(b.fechaCompromiso || 0));
@@ -563,6 +566,38 @@ router.put('/:id/compromisos/:compromisoId/revisar', validarId, soloRoles(ROLES_
     res.json(c);
   } catch (error) {
     console.error('Error revisando compromiso:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// PUT /:id/compromisos/:compromisoId/accion-mentor — el mentor marca su tarea como realizada
+// body: { comentario }   (también sirve para desmarcarla con { realizada: false })
+router.put('/:id/compromisos/:compromisoId/accion-mentor', validarId, soloRoles(ROLES_CREAN), async (req, res) => {
+  try {
+    const m = await Mentoria.findById(req.params.id);
+    if (!m || m.esBorrador || !esDuenoOGlobal(req.user, m)) return res.status(404).json({ error: 'Compromiso no encontrado' });
+    const c = m.compromisos.id(req.params.compromisoId);
+    if (!c) return res.status(404).json({ error: 'Compromiso no encontrado' });
+
+    const realizada = (req.body || {}).realizada !== false;
+    const comentario = String((req.body || {}).comentario || '').trim();
+    const yaRealizada = c.accionMentorEstado === 'realizada';
+
+    if (realizada) {
+      c.accionMentorEstado = 'realizada';
+      c.accionMentorRealizadaEn = new Date();
+      c.accionMentorComentario = comentario;
+      if (!yaRealizada) {
+        c.historial.push({ usuarioId: oid(idUsuario(req.user)), usuarioNombre: req.user.nombre, accion: 'accion_mentor_realizada', comentario });
+      }
+    } else {
+      c.accionMentorEstado = 'pendiente';
+      c.accionMentorRealizadaEn = null;
+    }
+    await m.save();
+    res.json(c);
+  } catch (error) {
+    console.error('Error actualizando tarea del mentor:', error);
     res.status(500).json({ error: error.message });
   }
 });
