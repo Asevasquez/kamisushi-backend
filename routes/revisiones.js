@@ -8,6 +8,10 @@ const Revision = require('../models/Revision');
 const Local = require('../models/Local');
 const { verifyToken, authorize } = require('../middleware/auth');
 const { procesarFotosEnObjeto } = require('./upload');
+const Compromiso = require('../models/Compromiso');
+const {
+  validarCompromisos, sincronizarCompromisos, publicarCompromisos, listarCompromisosDeRevision,
+} = require('../utils/compromisosHelper');
 
 // ==================== FUNCIONES AUXILIARES ====================
 
@@ -762,7 +766,9 @@ router.get('/:id', verifyToken, async (req, res) => {
     const revisionConNombres = {
       ...revision.toObject(),
       localNombre: revision.localId?.nombre || revision.localId,
-      supervisorNombre: revision.supervisorId?.nombre || revision.supervisorNombre
+      supervisorNombre: revision.supervisorId?.nombre || revision.supervisorNombre,
+      // Compromisos de la revisión (para editarlos en la app y verlos en el detalle del dashboard)
+      compromisos: await listarCompromisosDeRevision(revision._id),
     };
 
     res.json(revisionConNombres);
@@ -795,6 +801,16 @@ router.get('/:id/pdf', verifyToken, async (req, res) => {
 router.post('/borrador', verifyToken, async (req, res) => {
   try {
     req.body = procesarFotosEnObjeto(req.body); // red de seguridad: convierte a archivo cualquier base64 que haya quedado embebido
+
+    // Compromisos: se validan ANTES de guardar para no dejar una revisión a medias.
+    const compromisosPayload = req.body.compromisos;
+    delete req.body.compromisos;
+    let compromisosValidados = null;
+    if (compromisosPayload !== undefined) {
+      const v = await validarCompromisos(compromisosPayload, { localId: req.body.localId, fechaRevision: req.body.fechaRevision });
+      if (!v.ok) return res.status(400).json({ error: v.error });
+      compromisosValidados = v.items;
+    }
     let supervisorId = null;
     let supervisorNombre = req.user.nombre;
 
@@ -820,6 +836,7 @@ router.post('/borrador', verifyToken, async (req, res) => {
 
     const borrador = new Revision(borradorData);
     await borrador.save();
+    if (compromisosValidados) await sincronizarCompromisos({ revision: borrador, items: compromisosValidados, finalizada: false });
     res.status(201).json(borrador);
   } catch (error) {
     console.error('Error en borrador:', error);
@@ -835,6 +852,18 @@ router.put('/borrador/:id', verifyToken, async (req, res) => {
     const borrador = await Revision.findOne({ _id: req.params.id, esBorrador: true });
     if (!borrador) {
       return res.status(404).json({ error: 'Borrador no encontrado' });
+    }
+
+    const compromisosPayload = req.body.compromisos;
+    delete req.body.compromisos;
+    let compromisosValidados = null;
+    if (compromisosPayload !== undefined) {
+      const v = await validarCompromisos(compromisosPayload, {
+        localId: req.body.localId || borrador.localId,
+        fechaRevision: req.body.fechaRevision || borrador.fechaRevision,
+      });
+      if (!v.ok) return res.status(400).json({ error: v.error });
+      compromisosValidados = v.items;
     }
 
     const updateData = {
@@ -858,6 +887,7 @@ router.put('/borrador/:id', verifyToken, async (req, res) => {
       updateData,
       { new: true }
     );
+    if (compromisosValidados) await sincronizarCompromisos({ revision: updated, items: compromisosValidados, finalizada: false });
     res.json(updated);
   } catch (error) {
     console.error('Error actualizando borrador:', error);
@@ -871,6 +901,15 @@ router.post('/', verifyToken, async (req, res) => {
     req.body = procesarFotosEnObjeto(req.body);
     if (req.user.rol !== 'supervisor' && req.user.rol !== 'master' && req.user.rol !== 'gerencia') {
       return res.status(403).json({ error: 'No autorizado para crear revisiones' });
+    }
+
+    const compromisosPayload = req.body.compromisos;
+    delete req.body.compromisos;
+    let compromisosValidados = null;
+    if (compromisosPayload !== undefined) {
+      const v = await validarCompromisos(compromisosPayload, { localId: req.body.localId, fechaRevision: req.body.fechaRevision });
+      if (!v.ok) return res.status(400).json({ error: v.error });
+      compromisosValidados = v.items;
     }
 
     let supervisorId = null;
@@ -907,6 +946,7 @@ router.post('/', verifyToken, async (req, res) => {
 
     const revision = new Revision(revisionData);
     const savedRevision = await revision.save();
+    if (compromisosValidados) await sincronizarCompromisos({ revision: savedRevision, items: compromisosValidados, finalizada: true });
     console.log('Revisión creada con éxito:', savedRevision._id.toString());
     res.status(201).json(savedRevision);
   } catch (error) {
@@ -921,6 +961,18 @@ router.put('/:id', verifyToken, async (req, res) => {
     const revision = await Revision.findById(req.params.id);
     if (!revision) {
       return res.status(404).json({ error: 'Revision no encontrada' });
+    }
+
+    const compromisosPayload = req.body.compromisos;
+    delete req.body.compromisos;
+    let compromisosValidados = null;
+    if (compromisosPayload !== undefined) {
+      const v = await validarCompromisos(compromisosPayload, {
+        localId: req.body.localId || revision.localId,
+        fechaRevision: req.body.fechaRevision || revision.fechaRevision,
+      });
+      if (!v.ok) return res.status(400).json({ error: v.error });
+      compromisosValidados = v.items;
     }
 
     const updateData = {
@@ -943,6 +995,7 @@ router.put('/:id', verifyToken, async (req, res) => {
     };
 
     const updatedRevision = await Revision.findByIdAndUpdate(req.params.id, updateData, { new: true });
+    if (compromisosValidados) await sincronizarCompromisos({ revision: updatedRevision, items: compromisosValidados, finalizada: !revision.esBorrador });
     res.json(updatedRevision);
   } catch (error) {
     console.error('Error:', error);
@@ -960,6 +1013,18 @@ router.put('/borrador/:id/finalizar', verifyToken, async (req, res) => {
     if (!borrador) {
       console.log('Borrador no encontrado:', req.params.id);
       return res.status(404).json({ error: 'Borrador no encontrado' });
+    }
+
+    const compromisosPayload = req.body.compromisos;
+    delete req.body.compromisos;
+    let compromisosValidados = null;
+    if (compromisosPayload !== undefined) {
+      const v = await validarCompromisos(compromisosPayload, {
+        localId: req.body.localId || borrador.localId,
+        fechaRevision: req.body.fechaRevision || borrador.fechaRevision,
+      });
+      if (!v.ok) return res.status(400).json({ error: v.error });
+      compromisosValidados = v.items;
     }
 
     let supervisorId = null;
@@ -992,6 +1057,13 @@ router.put('/borrador/:id/finalizar', verifyToken, async (req, res) => {
       return res.status(404).json({ error: 'No se pudo actualizar el borrador' });
     }
 
+    // Los compromisos pasan a verse en los dashboards recién al finalizar.
+    if (compromisosValidados) {
+      await sincronizarCompromisos({ revision: finalizada, items: compromisosValidados, finalizada: true });
+    } else {
+      await publicarCompromisos(finalizada);
+    }
+
     console.log('Borrador finalizado:', finalizada._id);
     res.json(finalizada);
   } catch (error) {
@@ -1019,6 +1091,7 @@ router.put('/:id/marcar-finalizada', verifyToken, async (req, res) => {
     revision.modificadoPorId = req.user.id;
     revision.modificadoEn = new Date();
     await revision.save();
+    await publicarCompromisos(revision);
 
     console.log(`Revisión ${req.params.id} pasada a Finalizada desde el panel por ${req.user.nombre} (${req.user.rol})`);
     res.json(revision);
@@ -1037,11 +1110,13 @@ router.delete('/:id', verifyToken, async (req, res) => {
 
     if (req.user.rol === 'master') {
       await revision.deleteOne();
+      await Compromiso.deleteMany({ revisionId: revision._id });
       return res.json({ message: 'Revision eliminada' });
     }
 
     if (['supervisor', 'supervisorinterno'].includes(req.user.rol) && revision.supervisorId?.toString() === req.user.id) {
       await revision.deleteOne();
+      await Compromiso.deleteMany({ revisionId: revision._id });
       return res.json({ message: 'Revision eliminada' });
     }
 

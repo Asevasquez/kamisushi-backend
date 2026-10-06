@@ -14,6 +14,7 @@ const usuarioSchema = new mongoose.Schema({
   // Referencia a los locales asignados — se popula en el middleware
   localesAsignados: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Local' }],
   activo: { type: Boolean, default: true },
+  localesMentoria: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Local' }],
 }, { timestamps: true });
 
 // Hash de contraseña antes de guardar
