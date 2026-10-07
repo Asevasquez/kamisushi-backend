@@ -42,6 +42,7 @@ app.use('/api/auditorias', require('./routes/auditorias'));
 app.use('/api/mentorias', require('./routes/mentorias'));
 app.use('/api/compromisos', require('./routes/compromisos'));
 
+
 // Ruta de prueba
 app.get('/api/test', (req, res) => {
   res.json({ message: 'Backend funcionando', timestamp: Date.now() });

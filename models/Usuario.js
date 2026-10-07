@@ -15,6 +15,7 @@ const usuarioSchema = new mongoose.Schema({
   localesAsignados: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Local' }],
   activo: { type: Boolean, default: true },
   localesMentoria: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Local' }],
+  localesAdministrados: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Local' }],
 }, { timestamps: true });
 
 // Hash de contraseña antes de guardar

@@ -49,8 +49,8 @@ const compromisoSchema = new mongoose.Schema({
 
   seccion: { type: String, enum: ['servicioCliente', 'cocina'], required: true },
   texto: { type: String, required: true, maxlength: 200 },
-  responsableId: { type: mongoose.Schema.Types.ObjectId, ref: 'Usuario', required: true },
-  responsableNombre: { type: String, default: '' },
+  // Texto libre: quien escribe el compromiso indica el nombre de la persona que lo toma.
+  responsableNombre: { type: String, required: true, trim: true, maxlength: 80 },
   // Se guarda al mediodía UTC de la fecha elegida, para que el día calendario
   // no se corra por zona horaria.
   fechaLimite: { type: Date, required: true },
@@ -73,7 +73,6 @@ const compromisoSchema = new mongoose.Schema({
 compromisoSchema.index({ revisionId: 1, clientId: 1 }, { unique: true });
 compromisoSchema.index({ localId: 1, visible: 1, estado: 1, fechaLimite: 1 });
 compromisoSchema.index({ supervisorId: 1, visible: 1 });
-compromisoSchema.index({ responsableId: 1, visible: 1 });
 compromisoSchema.index({ fechaRevision: -1 });
 
 module.exports = mongoose.model('Compromiso', compromisoSchema);

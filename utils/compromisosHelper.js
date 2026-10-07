@@ -5,13 +5,13 @@
 // dashboard (funciones puras, fáciles de probar).
 const mongoose = require('mongoose');
 const Compromiso = require('../models/Compromiso');
-const Usuario = require('../models/Usuario');
 const Local = require('../models/Local');
 
 const SECCIONES = ['servicioCliente', 'cocina'];
 const SECCION_LABEL = { servicioCliente: 'Servicio al Cliente', cocina: 'Cocina' };
 const MAX_POR_SECCION = 3;
 const MAX_TEXTO = 200;
+const MAX_RESPONSABLE = 80;
 const META_CUMPLIMIENTO = 80;   // % a tiempo: Bueno >= 80
 const UMBRAL_REGULAR = 60;      // Regular 60-79, Crítico < 60
 const TZ = 'America/Santiago';
@@ -67,7 +67,7 @@ function esEditable(c) {
 }
 
 // ─── Validación del payload que manda la app ─────────────────────────────
-// items: [{ clientId, seccion, texto, responsableId, fechaLimite }]
+// items: [{ clientId, seccion, texto, responsableNombre, fechaLimite }]
 // Devuelve { ok:true, items:[normalizados] } o { ok:false, error }.
 async function validarCompromisos(items, { localId, fechaRevision } = {}) {
   if (!Array.isArray(items)) return { ok: false, error: 'Los compromisos deben enviarse como una lista' };
@@ -91,7 +91,10 @@ async function validarCompromisos(items, { localId, fechaRevision } = {}) {
     if (!texto) return { ok: false, error: `${nombre}: escribe qué se va a hacer` };
     if (texto.length > MAX_TEXTO) return { ok: false, error: `${nombre}: máximo ${MAX_TEXTO} caracteres` };
 
-    if (!mongoose.isValidObjectId(it.responsableId)) return { ok: false, error: `${nombre}: selecciona un responsable` };
+    // El responsable es el nombre que escribió la supervisora (texto libre).
+    const responsableNombre = String(it.responsableNombre || '').trim().replace(/\s+/g, ' ');
+    if (!responsableNombre) return { ok: false, error: `${nombre}: escribe quién toma el compromiso` };
+    if (responsableNombre.length > MAX_RESPONSABLE) return { ok: false, error: `${nombre}: el nombre del responsable admite máximo ${MAX_RESPONSABLE} caracteres` };
 
     const fl = normalizarFechaEntrada(it.fechaLimite);
     if (!fl) return { ok: false, error: `${nombre}: indica la fecha límite` };
@@ -101,23 +104,11 @@ async function validarCompromisos(items, { localId, fechaRevision } = {}) {
     if (vistos.has(clientId)) return { ok: false, error: `${nombre}: está repetido` };
     vistos.add(clientId);
 
-    normalizados.push({ clientId, seccion: it.seccion, texto, responsableId: String(it.responsableId), fechaLimite: fl });
+    normalizados.push({ clientId, seccion: it.seccion, texto, responsableNombre, fechaLimite: fl });
   }
 
   if (normalizados.length > 0) {
     if (!mongoose.isValidObjectId(localId)) return { ok: false, error: 'Falta el local de la revisión' };
-    const ids = [...new Set(normalizados.map((n) => n.responsableId))];
-    const admins = await Usuario.find({ _id: { $in: ids }, rol: 'administrador', activo: true })
-      .select('nombre localesAsignados').lean();
-    const mapa = new Map(admins.map((a) => [String(a._id), a]));
-    const localStr = String(localId);
-    for (const n of normalizados) {
-      const a = mapa.get(n.responsableId);
-      if (!a) return { ok: false, error: 'El responsable debe ser un administrador activo' };
-      const tieneLocal = (a.localesAsignados || []).some((l) => String(l._id || l) === localStr);
-      if (!tieneLocal) return { ok: false, error: `${a.nombre} no es administrador de este local` };
-      n.responsableNombre = a.nombre;
-    }
   }
   return { ok: true, items: normalizados };
 }
@@ -151,7 +142,6 @@ async function sincronizarCompromisos({ revision, items, finalizada }) {
       ...base,
       seccion: it.seccion,
       texto: it.texto,
-      responsableId: it.responsableId,
       responsableNombre: it.responsableNombre,
       fechaLimite: strAFecha(it.fechaLimite),
     };
@@ -196,7 +186,6 @@ async function listarCompromisosDeRevision(revisionId) {
     clientId: c.clientId,
     seccion: c.seccion,
     texto: c.texto,
-    responsableId: c.responsableId,
     responsableNombre: c.responsableNombre,
     fechaLimite: fechaAStr(c.fechaLimite),
     estado: c.estado,
@@ -275,7 +264,10 @@ function ordenarPeorPrimero(a, b) {
   return pa - pb || b.vencidos - a.vencidos;
 }
 
-function calcularResumen(docs, { hoyStr = fechaChileStr(), meses = 6, global = false, top = 10 } = {}) {
+// administradores: [{ administradorId, nombre, esMentor, localesIds }] — el ranking de
+// administradores se calcula por los locales que administra cada uno (el
+// responsable de cada compromiso es texto libre y no sirve para agrupar).
+function calcularResumen(docs, { hoyStr = fechaChileStr(), meses = 6, global = false, top = 10, administradores = [] } = {}) {
   const total = acumular(docs, hoyStr);
 
   const claves = mesesRango(hoyStr, meses);
@@ -319,12 +311,17 @@ function calcularResumen(docs, { hoyStr = fechaChileStr(), meses = 6, global = f
   };
 
   if (global) {
-    resumen.administradores = [...agrupar(docs, (c) => String(c.responsableId)).entries()].map(([id, lista]) => ({
-      administradorId: id,
-      nombre: lista[0].responsableNombre,
-      localesConCompromisos: new Set(lista.map((c) => String(c.localId))).size,
-      ...acumular(lista, hoyStr),
-    })).sort(ordenarPeorPrimero).slice(0, top);
+    resumen.administradores = administradores.map((adm) => {
+      const propios = new Set((adm.localesIds || []).map(String));
+      const lista = docs.filter((c) => propios.has(String(c.localId)));
+      return {
+        administradorId: String(adm.administradorId),
+        nombre: adm.nombre,
+        esMentor: !!adm.esMentor,
+        localesConCompromisos: new Set(lista.map((c) => String(c.localId))).size,
+        ...acumular(lista, hoyStr),
+      };
+    }).filter((a) => a.asumidos > 0).sort(ordenarPeorPrimero).slice(0, top);
 
     resumen.supervisoras = [...agrupar(docs, (c) => String(c.supervisorId)).entries()].map(([id, lista]) => {
       const a = acumular(lista, hoyStr);
@@ -334,10 +331,69 @@ function calcularResumen(docs, { hoyStr = fechaChileStr(), meses = 6, global = f
   return resumen;
 }
 
+
+// ─── Qué puede ver y hacer cada rol ──────────────────────────────────────
+const idStr = (l) => String(l && l._id ? l._id : l);
+const toOid = (v) => new mongoose.Types.ObjectId(idStr(v));
+
+// Locales que esta persona ADMINISTRA (ids como texto):
+//  - administrador: sus locales asignados
+//  - mentor: los marcados como "administrados" (sus locales asignados son los
+//    que mentorea, igual que en el módulo de Mentorías)
+function localesComoAdmin(u) {
+  const lista = u.rol === 'mentor' ? u.localesAdministrados : (u.rol === 'administrador' ? u.localesAsignados : []);
+  return (lista || []).map(idStr);
+}
+
+// propios = locales donde puede subir evidencia · mentoria = solo lectura
+function alcanceDeUsuario(rol, u) {
+  if (rol === 'mentor') {
+    return { propios: (u.localesAdministrados || []).map(toOid), mentoria: (u.localesAsignados || []).map(toOid) };
+  }
+  return { propios: (u.localesAsignados || []).map(toOid), mentoria: [] };
+}
+
+// Filtro de Mongo con lo que esta persona puede VER.
+function filtroPorRol({ rol, userId, alcance, alcanceParam, incluirMentoria = false }) {
+  const f = { visible: true };
+  if (['master', 'gerencia', 'supervisor'].includes(rol)) return f; // la supervisora ve todo; valida solo lo suyo
+  if (rol === 'supervisorinterno') {
+    f.supervisorId = toOid(userId);
+    f.localId = { $in: alcance.propios };
+    return f;
+  }
+  if (rol === 'administrador') { f.localId = { $in: alcance.propios }; return f; }
+  if (rol === 'mentor') {
+    // En listas y resumen se elige la pestaña; en el detalle basta con cualquiera de las dos.
+    const ids = incluirMentoria
+      ? [...alcance.propios, ...alcance.mentoria]
+      : (alcanceParam === 'mentoria' ? alcance.mentoria : alcance.propios);
+    f.localId = { $in: ids };
+    return f;
+  }
+  f.localId = { $in: [] }; // cualquier otro rol: nada
+  return f;
+}
+
+// Subir evidencia: administrador (o mentor, solo en los locales que administra) y solo si está abierto.
+function puedeEnviarEvidencia({ rol, alcance }, c) {
+  return ['administrador', 'mentor'].includes(rol)
+    && alcance.propios.some((l) => String(l) === String(c.localId))
+    && c.estado === 'abierto';
+}
+
+// Validar: quien creó la revisión, gerencia o master.
+function puedeRevisar({ rol, userId }, c) {
+  if (c.estado !== 'en_revision') return false;
+  if (['master', 'gerencia'].includes(rol)) return true;
+  return ['supervisor', 'supervisorinterno'].includes(rol) && String(c.supervisorId) === String(userId);
+}
+
 module.exports = {
-  SECCIONES, SECCION_LABEL, MAX_POR_SECCION, MAX_TEXTO, META_CUMPLIMIENTO, UMBRAL_REGULAR, DIA_MS,
+  SECCIONES, SECCION_LABEL, MAX_POR_SECCION, MAX_TEXTO, MAX_RESPONSABLE, META_CUMPLIMIENTO, UMBRAL_REGULAR, DIA_MS,
   fechaChileStr, strAFecha, fechaAStr, hoyReferencia, normalizarFechaEntrada, diasEntre, redondear1,
   estadoVisible, diasRestantes, evaluar, esEditable,
   validarCompromisos, sincronizarCompromisos, publicarCompromisos, listarCompromisosDeRevision,
   acumular, mesesRango, calcularResumen,
+  idStr, localesComoAdmin, alcanceDeUsuario, filtroPorRol, puedeEnviarEvidencia, puedeRevisar,
 };
