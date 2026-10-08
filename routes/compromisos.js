@@ -110,6 +110,7 @@ function serializar(c, req, hoyStr, conDetalle = false) {
     cerradoATiempo: c.cerradoATiempo ?? null,
     puedeEnviarEvidencia: H.puedeEnviarEvidencia(permisos(req), c),
     puedeRevisar: H.puedeRevisar(permisos(req), c),
+    puedeEliminar: H.puedeEliminar(permisos(req)),
   };
   if (conDetalle) {
     out.evidencias = c.evidencias || [];
@@ -377,7 +378,7 @@ router.put('/:id/revisar', async (req, res) => {
 
 // DELETE /:id — solo gerencia y master (queda en el log)
 router.delete('/:id', async (req, res) => {
-  if (!ROLES_ADMIN_TOTAL.includes(req.user.rol)) return res.status(403).json({ error: 'Solo gerencia y master pueden eliminar compromisos' });
+  if (!H.puedeEliminar(permisos(req))) return res.status(403).json({ error: 'Solo gerencia y master pueden eliminar compromisos' });
   try {
     if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Compromiso no encontrado' });
     const c = await Compromiso.findById(req.params.id);

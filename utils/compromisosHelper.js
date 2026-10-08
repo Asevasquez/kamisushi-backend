@@ -382,6 +382,11 @@ function puedeEnviarEvidencia({ rol, alcance }, c) {
     && c.estado === 'abierto';
 }
 
+// Eliminar un compromiso (con su evidencia e historial): solo gerencia y master.
+function puedeEliminar({ rol }) {
+  return ['master', 'gerencia'].includes(rol);
+}
+
 // Validar: quien creó la revisión, gerencia o master.
 function puedeRevisar({ rol, userId }, c) {
   if (c.estado !== 'en_revision') return false;
@@ -395,5 +400,5 @@ module.exports = {
   estadoVisible, diasRestantes, evaluar, esEditable,
   validarCompromisos, sincronizarCompromisos, publicarCompromisos, listarCompromisosDeRevision,
   acumular, mesesRango, calcularResumen,
-  idStr, localesComoAdmin, alcanceDeUsuario, filtroPorRol, puedeEnviarEvidencia, puedeRevisar,
+  idStr, localesComoAdmin, alcanceDeUsuario, filtroPorRol, puedeEnviarEvidencia, puedeRevisar, puedeEliminar,
 };
