@@ -8,6 +8,7 @@ const Auditoria = require('../models/Auditoria');
 const Revision = require('../models/Revision');
 const { verifyToken } = require('../middleware/auth');
 const { procesarFotosEnObjeto } = require('./upload');
+const { datosAuditoriaIndependiente } = require('../utils/auditoriaIndependiente');
 
 // Solo estos 3 roles pueden ver/usar el módulo de Auditoría, tanto desde la
 // app como desde el dashboard.
@@ -179,11 +180,16 @@ async function generarPDFAuditoria(res, auditoria) {
     doc.y = heroY + 100;
 
     // ── Info de contexto ──
-    dibujarTarjetasInfo(doc, [
+    dibujarTarjetasInfo(doc, auditoria.revisionId ? [
       { label: 'Local', value: auditoria.localNombre },
       { label: 'Supervisora (revisión)', value: auditoria.supervisorNombre || '—' },
       { label: 'Fecha revisión original', value: formatDate(auditoria.fechaRevision) },
       { label: '% Original', value: `${auditoria.porcentajeRevisionOriginal}% — ${auditoria.categoriaRevisionOriginal}` },
+    ] : [
+      { label: 'Local', value: auditoria.localNombre },
+      { label: 'Supervisora', value: auditoria.supervisorNombre || '—' },
+      { label: 'Origen', value: 'Sin supervisión previa' },
+      { label: 'Fecha de la auditoría', value: formatDate(auditoria.fechaAuditoria) },
     ]);
     doc.y += 8;
 
@@ -347,6 +353,9 @@ router.get('/', async (req, res) => {
     if (localId) query.localId = new mongoose.Types.ObjectId(localId);
     if (auditorId) query.auditorId = new mongoose.Types.ObjectId(auditorId);
     if (categoria) query.categoria = { $in: String(categoria).split(',') };
+    // supervision=con → solo las hechas sobre una supervisión previa · sin → solo las hechas directamente sobre un local
+    if (req.query.supervision === 'con') query.revisionId = { $type: 'objectId' };
+    else if (req.query.supervision === 'sin') query.revisionId = { $not: { $type: 'objectId' } };
 
     const skip = (Number(page) - 1) * Number(limit);
     const [data, total] = await Promise.all([
@@ -392,25 +401,41 @@ router.post('/', async (req, res) => {
     req.body = procesarFotosEnObjeto(req.body);
     const { revisionId } = req.body;
 
-    if (!revisionId) return res.status(400).json({ error: 'Falta la revisión a auditar' });
+    // La auditoría se hace sobre una supervisión previa (revisionId) o, si no se manda,
+    // directamente sobre un local (localId): "auditoría sin supervisión previa".
+    let contexto;
+    if (revisionId) {
+      const yaExiste = await Auditoria.findOne({ revisionId });
+      if (yaExiste) return res.status(400).json({ error: 'Esta revisión ya fue auditada' });
 
-    const yaExiste = await Auditoria.findOne({ revisionId });
-    if (yaExiste) return res.status(400).json({ error: 'Esta revisión ya fue auditada' });
+      const revision = await Revision.findById(revisionId).populate('localId', 'nombre');
+      if (!revision) return res.status(404).json({ error: 'La revisión a auditar no existe' });
+      if (revision.esBorrador) return res.status(400).json({ error: 'No se puede auditar una revisión que sigue como borrador' });
 
-    const revision = await Revision.findById(revisionId).populate('localId', 'nombre');
-    if (!revision) return res.status(404).json({ error: 'La revisión a auditar no existe' });
-    if (revision.esBorrador) return res.status(400).json({ error: 'No se puede auditar una revisión que sigue como borrador' });
+      contexto = {
+        revisionId,
+        localId: revision.localId?._id || revision.localId,
+        localNombre: revision.localId?.nombre || 'Sin local',
+        fechaRevision: revision.fechaRevision,
+        supervisorNombre: revision.supervisorNombre || '',
+        porcentajeRevisionOriginal: revision.porcentajeTotal || 0,
+        categoriaRevisionOriginal: revision.categoria || '',
+      };
+    } else {
+      const { localId } = req.body;
+      if (!localId || !mongoose.isValidObjectId(localId)) {
+        return res.status(400).json({ error: 'Selecciona el local a auditar (o una supervisión previa)' });
+      }
+      const local = await mongoose.model('Local').findById(localId).select('nombre activo');
+      const r = datosAuditoriaIndependiente(req.body, local);
+      if (!r.ok) return res.status(r.status || 400).json({ error: r.error });
+      contexto = r.datos; // sin revisionId ni datos de revisión original
+    }
 
     const puntajes = calcularPuntajes(req.body);
 
     const auditoria = new Auditoria({
-      revisionId,
-      localId: revision.localId?._id || revision.localId,
-      localNombre: revision.localId?.nombre || 'Sin local',
-      fechaRevision: revision.fechaRevision,
-      supervisorNombre: revision.supervisorNombre || '',
-      porcentajeRevisionOriginal: revision.porcentajeTotal || 0,
-      categoriaRevisionOriginal: revision.categoria || '',
+      ...contexto,
       auditorId: req.user.id,
       auditorNombre: req.user.nombre,
       servicioCliente: req.body.servicioCliente || {},
@@ -421,11 +446,16 @@ router.post('/', async (req, res) => {
     });
 
     await auditoria.save();
-    console.log('Auditoría creada:', auditoria._id.toString(), '| Local:', auditoria.localNombre, '| Auditor:', req.user.nombre);
+    console.log('Auditoría creada:', auditoria._id.toString(), '| Local:', auditoria.localNombre, '|', auditoria.revisionId ? 'sobre una supervisión previa' : 'sin supervisión previa', '| Auditor:', req.user.nombre);
     res.status(201).json(auditoria);
   } catch (error) {
     if (error.code === 11000) {
-      return res.status(400).json({ error: 'Esta revisión ya fue auditada' });
+      return res.status(400).json({
+        error: req.body && req.body.revisionId
+          ? 'Esta revisión ya fue auditada'
+          // Solo puede pasar si el índice antiguo de revisionId aún no se reemplazó
+          : 'No se pudo guardar: la base de datos aún tiene la restricción antigua de "una auditoría por revisión". Reinicia el servidor para que se actualice.',
+      });
     }
     console.error('Error creando auditoría:', error);
     res.status(500).json({ error: error.message });

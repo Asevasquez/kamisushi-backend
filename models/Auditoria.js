@@ -19,16 +19,19 @@ const reclamoAuditoriaSchema = new mongoose.Schema({
 }, { _id: false });
 
 const auditoriaSchema = new mongoose.Schema({
-  // Qué revisión se está auditando — una auditoría por revisión (se valida
-  // con el índice único de abajo, no solo en el código).
-  revisionId: { type: mongoose.Schema.Types.ObjectId, ref: 'Revision', required: true, unique: true },
+  // Qué revisión (supervisión previa) se está auditando. ES OPCIONAL: una auditoría
+  // también puede hacerse directamente sobre un local, sin supervisión previa.
+  // Cuando existe, hay una sola auditoría por revisión (índice único parcial, abajo).
+  revisionId: { type: mongoose.Schema.Types.ObjectId, ref: 'Revision' },
 
   // Datos de la revisión original, copiados al momento de auditar (para no
   // depender de un populate constante y para que el informe/dashboard no
-  // cambien si la revisión original se edita después).
+  // cambien si la revisión original se edita después). Sin supervisión previa,
+  // fechaRevision y los datos "originales" quedan vacíos; supervisorNombre es
+  // el nombre que escribió el auditor (opcional).
   localId: { type: mongoose.Schema.Types.ObjectId, ref: 'Local', required: true },
   localNombre: { type: String, required: true },
-  fechaRevision: { type: Date, required: true },
+  fechaRevision: { type: Date },
   supervisorNombre: { type: String, default: '' },
   porcentajeRevisionOriginal: { type: Number, default: 0 },
   categoriaRevisionOriginal: { type: String, default: '' },
@@ -62,10 +65,18 @@ const auditoriaSchema = new mongoose.Schema({
   categoria: { type: String, default: '' },               // mismas categorías que Revision
 
   esBorrador: { type: Boolean, default: true },
-}, { timestamps: true });
+// autoIndex desactivado: el índice de revisionId lo administra asegurarIndiceRevision
+// (reemplaza el índice único antiguo por uno parcial; Mongoose no sabe cambiar un índice ya creado).
+}, { timestamps: true, autoIndex: false });
 
-// Impide dos auditorías para la misma revisión a nivel de base de datos,
-// no solo en el código de la ruta (evita condiciones de carrera).
-auditoriaSchema.index({ revisionId: 1 }, { unique: true });
+const Auditoria = mongoose.model('Auditoria', auditoriaSchema);
 
-module.exports = mongoose.model('Auditoria', auditoriaSchema);
+// Impide dos auditorías para la misma revisión a nivel de base de datos (evita
+// condiciones de carrera), pero solo entre las que tienen supervisión previa:
+// las auditorías sin supervisión previa no tienen revisionId y pueden ser muchas.
+const { asegurarIndiceRevision } = require('../utils/indicesAuditoria');
+const asegurarIndices = () => asegurarIndiceRevision(Auditoria.collection);
+if (mongoose.connection.readyState === 1) asegurarIndices();
+else mongoose.connection.once('open', asegurarIndices);
+
+module.exports = Auditoria;
