@@ -12,7 +12,7 @@ const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
 const Revision = require('../models/Revision');
-const { verifyToken } = require('../middleware/auth');
+const { verifyToken, localesDeSupervision, ROLES_CON_LOCALES_ASIGNADOS } = require('../middleware/auth');
 
 // ────────────────────────────────────────────────────────────
 // Bancos de preguntas — deben coincidir EXACTAMENTE con los ids
@@ -114,8 +114,8 @@ function severidadReclamo(tipo) {
 async function alcanceLocales(req) {
   if (req.user.rol === 'master' || req.user.rol === 'gerencia') return null;
 
-  if (['administrador', 'supervisorinterno'].includes(req.user.rol)) {
-    return (req.user.localesAsignados || []).map(l => (l._id || l).toString());
+  if (ROLES_CON_LOCALES_ASIGNADOS.includes(req.user.rol)) {
+    return localesDeSupervision(req.user); // mentor: los que administra
   }
 
   if (req.user.rol === 'supervisor') {

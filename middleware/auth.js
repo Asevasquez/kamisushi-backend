@@ -19,7 +19,8 @@ const verifyToken = async (req, res, next) => {
     // Esto garantiza que req.user.localesAsignados siempre tenga los datos actuales
     const usuario = await Usuario.findById(decoded.id)
       .select('-password')
-      .populate('localesAsignados', '_id nombre ciudad');
+      .populate('localesAsignados', '_id nombre ciudad')
+      .populate('localesAdministrados', '_id nombre ciudad');
 
     if (!usuario || !usuario.activo) {
       return res.status(401).json({ error: 'Usuario no encontrado o inactivo' });
@@ -32,6 +33,8 @@ const verifyToken = async (req, res, next) => {
       rol: usuario.rol,
       supervisorId: usuario.supervisorId,
       localesAsignados: usuario.localesAsignados || [],
+      // Mentor: locales donde además es administrador (en los que mentorea o es tutor van en localesAsignados / localesTutoria)
+      localesAdministrados: usuario.localesAdministrados || [],
     };
 
     next();
@@ -59,4 +62,14 @@ const authorize = (...roles) => {
   };
 };
 
-module.exports = { verifyToken, authorize };
+// Locales que el usuario ve "como administrador" en Supervisión (Dashboard, Revisiones,
+// Dashboard Supervisión):
+//  - administrador / supervisorinterno → localesAsignados
+//  - mentor → localesAdministrados (los que mentorea o donde es tutor NO entran aquí;
+//    esos se ven en Mentorías)
+const ROLES_CON_LOCALES_ASIGNADOS = ['administrador', 'supervisorinterno', 'mentor'];
+const localesDeSupervision = (user) =>
+  ((user?.rol === 'mentor' ? user.localesAdministrados : user?.localesAsignados) || [])
+    .map((l) => (l?._id || l).toString());
+
+module.exports = { verifyToken, authorize, localesDeSupervision, ROLES_CON_LOCALES_ASIGNADOS };

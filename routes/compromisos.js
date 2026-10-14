@@ -7,7 +7,7 @@
 //     sube la evidencia.
 //   - Quien creó la revisión (o gerencia/master) valida: aprueba o pide corrección.
 //   - Gerencia/master ven todo. El mentor ve además, en solo lectura, los
-//     locales que mentorea (sus locales asignados, como en Mentorías).
+//     locales que mentorea y aquellos donde es tutor (como en Mentorías).
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
@@ -30,9 +30,14 @@ router.use(async (req, res, next) => {
   }
   try {
     // Se lee de la base (no del token) para tener siempre los locales vigentes.
-    const u = await Usuario.findById(req.user.id).select('localesAsignados localesAdministrados activo').lean();
+    const u = await Usuario.findById(req.user.id).select('localesAsignados localesAdministrados localesTutoria activo').lean();
     if (!u || u.activo === false) return res.status(401).json({ error: 'Usuario no disponible' });
-    req.alcance = H.alcanceDeUsuario(req.user.rol, u);
+    // Mentor: la vista "Mentoría" (solo lectura) incluye también los locales donde es
+    // tutor. El helper arma esa vista con localesAsignados, así que se le suman ahí.
+    const paraAlcance = req.user.rol === 'mentor'
+      ? { ...u, localesAsignados: [...(u.localesAsignados || []), ...(u.localesTutoria || [])] }
+      : u;
+    req.alcance = H.alcanceDeUsuario(req.user.rol, paraAlcance);
 
     // Filtro por administrador (solo se usa en la vista general): equivale a
     // "los locales de ese administrador".
@@ -152,9 +157,17 @@ router.put('/administrados/:usuarioId', async (req, res) => {
     if (!mongoose.isValidObjectId(usuarioId) || !localesIds.every((l) => mongoose.isValidObjectId(l))) {
       return res.status(400).json({ error: 'Datos inválidos' });
     }
-    const u = await Usuario.findById(usuarioId).select('rol').lean();
+    const u = await Usuario.findById(usuarioId).select('rol localesAsignados localesTutoria').lean();
     if (!u) return res.status(404).json({ error: 'Usuario no encontrado' });
     if (u.rol !== 'mentor') return res.status(400).json({ error: 'Los locales administrados se asignan solo a mentores' });
+    // Un local no puede estar en dos listas del mismo mentor (mentorea / tutor / administra)
+    const enOtraLista = new Set([...(u.localesAsignados || []), ...(u.localesTutoria || [])].map(String));
+    const choques = localesIds.filter((l) => enOtraLista.has(String(l)));
+    if (choques.length) {
+      const Local = require('../models/Local');
+      const nombres = (await Local.find({ _id: { $in: choques.map(oid) } }).select('nombre').lean()).map((l) => l.nombre);
+      return res.status(400).json({ error: `Estos locales ya están en otra lista del mentor: ${nombres.join(', ')}` });
+    }
     await Usuario.updateOne({ _id: usuarioId }, { $set: { localesAdministrados: localesIds.map(oid) } }, { strict: false });
     res.json({ message: 'Locales administrados actualizados' });
   } catch (error) {

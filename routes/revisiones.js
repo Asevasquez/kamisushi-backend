@@ -6,7 +6,7 @@ const path = require('path');
 const PDFDocument = require('pdfkit');
 const Revision = require('../models/Revision');
 const Local = require('../models/Local');
-const { verifyToken, authorize } = require('../middleware/auth');
+const { verifyToken, authorize, localesDeSupervision, ROLES_CON_LOCALES_ASIGNADOS } = require('../middleware/auth');
 const { procesarFotosEnObjeto } = require('./upload');
 const Compromiso = require('../models/Compromiso');
 const {
@@ -606,8 +606,8 @@ router.get('/estadisticas-por-local', verifyToken, async (req, res) => {
     // Los supervisores ahora ven las estadísticas de todos los locales/
     // supervisores, igual que master y gerencia — consistente con que ya
     // pueden ver el listado completo de revisiones.
-    if (['administrador', 'supervisorinterno'].includes(req.user.rol)) {
-      const localesAsignados = req.user.localesAsignados?.map(l => l._id?.toString() || l) || [];
+    if (ROLES_CON_LOCALES_ASIGNADOS.includes(req.user.rol)) {
+      const localesAsignados = localesDeSupervision(req.user); // mentor: los que administra
       if (localesAsignados.length > 0) {
         const localIds = localesAsignados.flatMap(id => {
           try { return [id, new mongoose.Types.ObjectId(id)]; } catch(e) { return [id]; }
@@ -677,8 +677,8 @@ router.get('/', verifyToken, async (req, res) => {
     // Los supervisores ahora pueden ver las revisiones de todos los locales/
     // supervisores, igual que master y gerencia — antes quedaban limitados
     // a solo las propias.
-    if (['administrador', 'supervisorinterno'].includes(req.user.rol)) {
-      const asignados = (req.user.localesAsignados || []).map(l => (l._id || l).toString());
+    if (ROLES_CON_LOCALES_ASIGNADOS.includes(req.user.rol)) {
+      const asignados = localesDeSupervision(req.user); // mentor: los que administra
       if (asignados.length === 0) return res.json({ data: [], total: 0 });
       localesPermitidos = asignados;
     }
@@ -1078,7 +1078,7 @@ router.put('/borrador/:id/finalizar', verifyToken, async (req, res) => {
 // — no toca localId/supervisorId/supervisorNombre ni ningún otro campo, para
 // no perder la atribución original de quién hizo la revisión.
 router.put('/:id/marcar-finalizada', verifyToken, async (req, res) => {
-  if (['administrador', 'supervisor'].includes(req.user.rol)) {
+  if (['administrador', 'supervisor', 'mentor'].includes(req.user.rol)) {
     return res.status(403).json({ error: 'No tienes permiso para finalizar revisiones desde el panel' });
   }
   try {

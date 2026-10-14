@@ -4,7 +4,7 @@ const Revision = require('../models/Revision');
 const Local = require('../models/Local');
 const UsuarioLocal = require('../models/UsuarioLocal');
 const Estadistica = require('../models/Estadistica');
-const { verifyToken } = require('../middleware/auth');
+const { verifyToken, localesDeSupervision } = require('../middleware/auth');
 
 // Obtener estadísticas generales del dashboard
 // backend/routes/estadisticas.js - Modificar el dashboard
@@ -16,9 +16,9 @@ router.get('/dashboard', verifyToken, async (req, res) => {
       // Master ve todos los locales
       const todosLocales = await Local.find({ activo: true });
       localesPermitidos = todosLocales.map(l => l._id.toString());
-    } else if (req.user.rol === 'administrador') {
-      // Administrador solo sus locales asignados
-      localesPermitidos = req.user.localesAsignados.map(l => l._id.toString());
+    } else if (['administrador', 'mentor'].includes(req.user.rol)) {
+      // Administrador: sus locales asignados · Mentor: los locales que administra
+      localesPermitidos = localesDeSupervision(req.user);
     } else if (req.user.rol === 'gerencia') {
       // Gerencia ve todos los locales (solo lectura)
       const todosLocales = await Local.find({ activo: true });
@@ -203,7 +203,11 @@ router.get('/local/:localId', verifyToken, async (req, res) => {
     const { periodo = 'mensual' } = req.query;
 
     // Verificar acceso al local
-    if (req.user.rol !== 'master') {
+    if (req.user.rol === 'mentor') {
+      if (!localesDeSupervision(req.user).includes(String(localId))) {
+        return res.status(403).json({ error: 'No tienes acceso a este local' });
+      }
+    } else if (req.user.rol !== 'master') {
       const acceso = await UsuarioLocal.findOne({
         usuarioId: req.user.id,
         localId: localId,
@@ -300,9 +304,9 @@ router.get('/mis-locales', verifyToken, async (req, res) => {
       return res.json(locales);
     }
 
-    // Administrador solo ve sus locales asignados
-    if (req.user.rol === 'administrador') {
-      const ids = (req.user.localesAsignados || []).map(l => l._id || l);
+    // Administrador: sus locales asignados · Mentor: los locales que administra
+    if (['administrador', 'mentor'].includes(req.user.rol)) {
+      const ids = localesDeSupervision(req.user);
       if (ids.length === 0) return res.json([]);
       const locales = await Local.find({ _id: { $in: ids }, activo: true }).sort({ nombre: 1 });
       return res.json(locales);
