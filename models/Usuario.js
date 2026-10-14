@@ -16,6 +16,9 @@ const usuarioSchema = new mongoose.Schema({
   activo: { type: Boolean, default: true },
   localesMentoria: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Local' }],
   localesAdministrados: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Local' }],
+  // Mentor: locales donde es tutor (hace Tutorías con el mismo formulario de Mentoría).
+  // Un local no puede estar en dos listas del mismo mentor (mentorea / tutor / administra).
+  localesTutoria: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Local' }],
 }, { timestamps: true });
 
 // Hash de contraseña antes de guardar

@@ -92,7 +92,11 @@ const compromisoSchema = new Schema({
 
 const mentoriaSchema = new Schema(
   {
-    // MEN-2026-0001, se asigna al finalizar. Sin default a propósito: el índice
+    // Mismo formulario y reglas: mentoría (locales que mentorea) o tutoría (locales donde es
+    // tutor). Los documentos anteriores no tienen el campo y se consideran mentoría.
+    tipo: { type: String, enum: ['mentoria', 'tutoria'], default: 'mentoria' },
+
+    // MEN-2026-0001 / TUT-2026-0001, se asigna al finalizar. Sin default a propósito: el índice
     // único es sparse y un null en cada borrador chocaría entre sí.
     numeroInforme: { type: String },
 
@@ -141,9 +145,11 @@ const mentoriaSchema = new Schema(
 
 mentoriaSchema.index({ localId: 1, fechaMentoria: -1 });
 mentoriaSchema.index({ mentorId: 1, fechaMentoria: -1 });
+mentoriaSchema.index({ tipo: 1, mentorId: 1, localId: 1, fechaMentoria: -1 });
 mentoriaSchema.index({ esBorrador: 1, fechaMentoria: -1 });
 mentoriaSchema.index({ 'compromisos.estado': 1 });
 mentoriaSchema.index({ numeroInforme: 1 }, { unique: true, sparse: true });
 mentoriaSchema.index({ clienteId: 1 }, { unique: true, sparse: true });
+mentoriaSchema.index({ tipo: 1, localId: 1, fechaMentoria: -1 });
 
 module.exports = mongoose.model('Mentoria', mentoriaSchema);

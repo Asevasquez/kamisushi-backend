@@ -1,22 +1,33 @@
 const express = require('express');
 const router = express.Router();
 const Local = require('../models/Local');
+const Usuario = require('../models/Usuario');
 const { verifyToken } = require('../middleware/auth');
 
 const ETIQUETA = { nombre: 'nombre', direccion: 'dirección', ciudad: 'ciudad', activo: 'estado', codigoExterno: 'código' };
 
-// Deja solo los campos conocidos (nada de _id ni otros) y quita los espacios sobrantes de los
-// textos: así "   " ya no cuenta como un nombre válido. Si codigoExterno viene vacío se omite
-// en vez de guardarlo como "" — así el índice sparse+unique no choca entre locales sin código
-// (un "" guardado de verdad SÍ cuenta como valor duplicado para Mongo, a diferencia de un
-// campo ausente). "codigoVacio" indica que, al editar, hay que quitarlo del local.
+// Campos del local que se pueden escribir: los del PROPIO MODELO (así, si el modelo tiene más
+// campos que nombre/dirección/ciudad/estado/código, no se pierden al guardar). Se excluyen los que
+// maneja Mongoose y cualquier dato que venga en la solicitud y no sea del modelo.
+const CAMPOS_AUTOMATICOS = ['_id', '__v', 'createdAt', 'updatedAt'];
+const camposDelModelo = () => [...new Set(
+  Object.keys(Local.schema.paths).map((p) => p.split('.')[0]).filter((p) => !CAMPOS_AUTOMATICOS.includes(p))
+)];
+
+// Quita los espacios sobrantes de los textos: así "   " ya no cuenta como un nombre válido.
+// Si codigoExterno viene vacío se omite en vez de guardarlo como "" — así el índice
+// sparse+unique no choca entre locales sin código (un "" guardado de verdad SÍ cuenta como valor
+// duplicado para Mongo, a diferencia de un campo ausente). "codigoVacio" indica que, al editar,
+// hay que quitarlo del local.
 function normalizarLocal(body) {
   const b = body && typeof body === 'object' ? body : {};
   const datos = {};
-  for (const c of ['nombre', 'direccion', 'ciudad']) {
-    if (b[c] !== undefined) datos[c] = typeof b[c] === 'string' ? b[c].trim() : b[c];
+  for (const campo of camposDelModelo()) {
+    if (campo === 'codigoExterno' || b[campo] === undefined) continue;
+    datos[campo] = typeof b[campo] === 'string' ? b[campo].trim() : b[campo];
   }
-  if (b.activo !== undefined) datos.activo = b.activo === 'true' ? true : b.activo === 'false' ? false : b.activo;
+  if (datos.activo === 'true') datos.activo = true;
+  else if (datos.activo === 'false') datos.activo = false;
   const tieneCodigo = typeof b.codigoExterno === 'string';
   const codigo = tieneCodigo ? b.codigoExterno.trim() : '';
   if (codigo) datos.codigoExterno = codigo;
@@ -65,6 +76,15 @@ router.get('/activos', verifyToken, async (req, res) => {
     if (['administrador', 'supervisorinterno'].includes(req.user.rol)) {
       const asignados = (req.user.localesAsignados || []).map(l => l._id || l);
       const locales = await Local.find({ _id: { $in: asignados }, activo: true });
+      return res.json(locales);
+    }
+    // Mentor: los locales de sus tres listas (mentorea, tutor y administra). Se leen
+    // de la base de datos para no depender de qué campos carga el middleware.
+    if (req.user.rol === 'mentor') {
+      const u = await Usuario.findById(req.user.id || req.user._id)
+        .select('localesAsignados localesTutoria localesAdministrados').lean();
+      const ids = [...(u?.localesAsignados || []), ...(u?.localesTutoria || []), ...(u?.localesAdministrados || [])];
+      const locales = await Local.find({ _id: { $in: ids }, activo: true });
       return res.json(locales);
     }
     const locales = await Local.find({ activo: true });

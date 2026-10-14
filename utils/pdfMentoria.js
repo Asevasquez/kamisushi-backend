@@ -70,13 +70,16 @@ function colorPuntaje(p) {
 
 function generarPdfMentoria(m, destino, opciones = {}) {
   const { ocultarObservacionesSinFiltro = false } = opciones;
+  // Mismo informe para mentoría y tutoría; cambia el nombre
+  const nombreTipo = m.tipo === 'tutoria' ? 'Tutoría' : 'Mentoría';
+  const tituloInforme = `Informe de ${nombreTipo}`;
 
   const doc = new PDFDocument({
     size: 'A4',
     bufferPages: true,
     margins: { top: M, left: M, right: M, bottom: M + ALTO_PIE },
     info: {
-      Title: `Informe de Mentoría ${m.numeroInforme || ''} - ${m.localNombre || ''}`,
+      Title: `${tituloInforme} ${m.numeroInforme || ''} - ${m.localNombre || ''}`,
       Author: 'KamiSushi Supervisión',
     },
   });
@@ -90,7 +93,7 @@ function generarPdfMentoria(m, destino, opciones = {}) {
   // Encabezado corto en todas las páginas siguientes a la primera
   const encabezadoContinuo = () => {
     doc.font('Helvetica-Bold').fontSize(9).fillColor(C.rojo)
-      .text('KAMISUSHI · INFORME DE MENTORÍA', M, M, { width: ancho / 2, lineBreak: false });
+      .text(`KAMISUSHI · ${tituloInforme.toUpperCase()}`, M, M, { width: ancho / 2, lineBreak: false });
     doc.font('Helvetica').fontSize(9).fillColor(C.gris)
       .text(`${m.localNombre || ''} · ${fmtFecha(m.fechaMentoria)} · N° ${m.numeroInforme || '—'}`,
         M + ancho / 2, M, { width: ancho / 2, align: 'right', lineBreak: false });
@@ -119,7 +122,7 @@ function generarPdfMentoria(m, destino, opciones = {}) {
   doc.font('Helvetica-Bold').fontSize(9).fillColor(C.rojoClaro)
     .text('KAMISUSHI', M, 26, { characterSpacing: 1.2, lineBreak: false });
   doc.font('Helvetica-Bold').fontSize(20).fillColor('#FFFFFF')
-    .text('Informe de Mentoría', M, 40, { lineBreak: false });
+    .text(tituloInforme, M, 40, { lineBreak: false });
   doc.font('Helvetica-Bold').fontSize(10).fillColor('#FFFFFF')
     .text(`N° ${m.numeroInforme || '—'}`, M, 32, { width: ancho, align: 'right', lineBreak: false });
   doc.font('Helvetica').fontSize(9).fillColor(C.rojoClaro)
@@ -380,7 +383,7 @@ function generarPdfMentoria(m, destino, opciones = {}) {
     doc.page.margins.bottom = 0;
     const py = H - M + 6;
     doc.font('Helvetica').fontSize(8).fillColor(C.gris)
-      .text(`KamiSushi · Informe de Mentoría · ${m.localNombre || ''}`, M, py, { width: ancho / 2, lineBreak: false });
+      .text(`KamiSushi · ${tituloInforme} · ${m.localNombre || ''}`, M, py, { width: ancho / 2, lineBreak: false });
     doc.text(`Página ${i + 1} de ${rango.count}`, M + ancho / 2, py, { width: ancho / 2, align: 'right', lineBreak: false });
     doc.page.margins.bottom = margenOriginal;
   }
