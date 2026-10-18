@@ -7,9 +7,11 @@ const mongoose = require('mongoose');
 const Compromiso = require('../models/Compromiso');
 const Local = require('../models/Local');
 
-const SECCIONES = ['servicioCliente', 'cocina'];
-const SECCION_LABEL = { servicioCliente: 'Servicio al Cliente', cocina: 'Cocina' };
-const MAX_POR_SECCION = 3;
+const SECCIONES = ['servicioCliente', 'cocina', 'general'];
+const SECCION_LABEL = { servicioCliente: 'Servicio al Cliente', cocina: 'Cocina', general: 'Generales' };
+// Máximo de compromisos por sección. Para cambiar el límite de una sección basta con cambiarlo aquí
+// (y en la app, en SECCIONES_COMPROMISO).
+const MAX_POR_SECCION = { servicioCliente: 3, cocina: 3, general: 5 };
 const MAX_TEXTO = 200;
 const MAX_RESPONSABLE = 80;
 const META_CUMPLIMIENTO = 80;   // % a tiempo: Bueno >= 80
@@ -72,7 +74,7 @@ function esEditable(c) {
 async function validarCompromisos(items, { localId, fechaRevision } = {}) {
   if (!Array.isArray(items)) return { ok: false, error: 'Los compromisos deben enviarse como una lista' };
 
-  const porSeccion = { servicioCliente: 0, cocina: 0 };
+  const porSeccion = Object.fromEntries(SECCIONES.map((sec) => [sec, 0]));
   const fechaRevStr = normalizarFechaEntrada(fechaRevision) || fechaChileStr();
   const normalizados = [];
   const vistos = new Set();
@@ -83,8 +85,8 @@ async function validarCompromisos(items, { localId, fechaRevision } = {}) {
 
     if (!SECCIONES.includes(it.seccion)) return { ok: false, error: `${nombre}: sección inválida` };
     porSeccion[it.seccion]++;
-    if (porSeccion[it.seccion] > MAX_POR_SECCION) {
-      return { ok: false, error: `Máximo ${MAX_POR_SECCION} compromisos en ${SECCION_LABEL[it.seccion]}` };
+    if (porSeccion[it.seccion] > MAX_POR_SECCION[it.seccion]) {
+      return { ok: false, error: `Máximo ${MAX_POR_SECCION[it.seccion]} compromisos en ${SECCION_LABEL[it.seccion]}` };
     }
 
     const texto = String(it.texto || '').trim();
@@ -346,9 +348,12 @@ function localesComoAdmin(u) {
 }
 
 // propios = locales donde puede subir evidencia · mentoria = solo lectura
+// (mentor: los que mentorea —localesAsignados, como en Mentorías— y los que tutorea —localesTutoria—)
 function alcanceDeUsuario(rol, u) {
   if (rol === 'mentor') {
-    return { propios: (u.localesAdministrados || []).map(toOid), mentoria: (u.localesAsignados || []).map(toOid) };
+    const lectura = new Map();
+    [...(u.localesAsignados || []), ...(u.localesTutoria || [])].forEach((l) => lectura.set(idStr(l), l));
+    return { propios: (u.localesAdministrados || []).map(toOid), mentoria: [...lectura.values()].map(toOid) };
   }
   return { propios: (u.localesAsignados || []).map(toOid), mentoria: [] };
 }

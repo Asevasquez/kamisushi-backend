@@ -47,7 +47,7 @@ const compromisoSchema = new mongoose.Schema({
   supervisorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Usuario' },
   supervisorNombre: { type: String, default: '' },
 
-  seccion: { type: String, enum: ['servicioCliente', 'cocina'], required: true },
+  seccion: { type: String, enum: ['servicioCliente', 'cocina', 'general'], required: true },
   texto: { type: String, required: true, maxlength: 200 },
   // Texto libre: quien escribe el compromiso indica el nombre de la persona que lo toma.
   responsableNombre: { type: String, required: true, trim: true, maxlength: 80 },

@@ -12,6 +12,8 @@ const Compromiso = require('../models/Compromiso');
 const {
   validarCompromisos, sincronizarCompromisos, publicarCompromisos, listarCompromisosDeRevision,
 } = require('../utils/compromisosHelper');
+// Inicio y fin de la revisión (hora + ubicación) se fijan una sola vez; ver el archivo.
+const { mezclarGeolocalizacion, geoPlana } = require('../utils/geoRevision');
 
 // ==================== FUNCIONES AUXILIARES ====================
 
@@ -834,6 +836,7 @@ router.post('/borrador', verifyToken, async (req, res) => {
       modificadoEn: new Date()
     };
 
+    borradorData.geolocalizacion = mezclarGeolocalizacion(null, req.body.geolocalizacion, { finalizando: false });
     const borrador = new Revision(borradorData);
     await borrador.save();
     if (compromisosValidados) await sincronizarCompromisos({ revision: borrador, items: compromisosValidados, finalizada: false });
@@ -882,6 +885,7 @@ router.put('/borrador/:id', verifyToken, async (req, res) => {
       try { updateData.supervisorId = new mongoose.Types.ObjectId(req.body.supervisorId); } catch(e) {}
     }
 
+    updateData.geolocalizacion = mezclarGeolocalizacion(geoPlana(borrador), req.body.geolocalizacion, { finalizando: false });
     const updated = await Revision.findByIdAndUpdate(
       req.params.id,
       updateData,
@@ -935,7 +939,7 @@ router.post('/', verifyToken, async (req, res) => {
       porcentajeTotal: Number(req.body.porcentajeTotal) || 0,
       categoria: req.body.categoria || '',
       comentariosGenerales: req.body.comentariosGenerales || '',
-      geolocalizacion: req.body.geolocalizacion || undefined,
+      geolocalizacion: mezclarGeolocalizacion(null, req.body.geolocalizacion, { finalizando: true }),
       creadoPor: req.user.nombre,
       creadoPorId: req.user.id,
       creadoEn: new Date(),
@@ -987,7 +991,8 @@ router.put('/:id', verifyToken, async (req, res) => {
       porcentajeTotal: Number(req.body.porcentajeTotal) || revision.porcentajeTotal,
       categoria: req.body.categoria || revision.categoria,
       comentariosGenerales: req.body.comentariosGenerales || revision.comentariosGenerales,
-      geolocalizacion: req.body.geolocalizacion || revision.geolocalizacion,
+      // Editar una revisión no cambia su inicio ni su fin (eso era lo que desordenaba las horas).
+      geolocalizacion: mezclarGeolocalizacion(geoPlana(revision), req.body.geolocalizacion, { finalizando: false }),
       supervisorNombre: req.user.nombre,
       modificadoPor: req.user.nombre,
       modificadoPorId: req.user.id,
@@ -1047,6 +1052,7 @@ router.put('/borrador/:id/finalizar', verifyToken, async (req, res) => {
       modificadoEn: new Date()
     };
 
+    updateData.geolocalizacion = mezclarGeolocalizacion(geoPlana(borrador), req.body.geolocalizacion, { finalizando: true });
     const finalizada = await Revision.findByIdAndUpdate(
       req.params.id,
       updateData,
