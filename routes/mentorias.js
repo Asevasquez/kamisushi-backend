@@ -24,7 +24,9 @@ const {
 // ────────────────────────────────────────────────────────────
 const ROLES_GLOBALES = ['gerencia', 'master'];
 const ROLES_CREAN = ['mentor', ...ROLES_GLOBALES];
-const ROLES_MODULO = [...ROLES_CREAN, 'administrador'];
+// supervisor: solo LECTURA de los compromisos de mentoría/tutoría de sus locales (para
+// "Todos los compromisos"). No crea, no envía evidencia, no revisa. El supervisor interno no entra.
+const ROLES_MODULO = [...ROLES_CREAN, 'administrador', 'supervisor'];
 
 // Las observaciones "sin filtro" (SAC, Cocina, Liderazgo) son internas: el
 // administrador no las ve ni en la API ni en su PDF. Finanzas sí la ve.
@@ -40,6 +42,24 @@ function soloRoles(roles) {
 }
 
 router.use(verifyToken, soloRoles(ROLES_MODULO));
+
+// Supervisor: sus locales = los asignados; si no tiene, los locales donde ha hecho revisiones
+// (el mismo criterio que usa Estadísticas para el supervisor).
+router.use(async (req, res, next) => {
+  if (req.user.rol !== 'supervisor') return next();
+  try {
+    let ids = idsLocalesAsignados(req.user);
+    if (!ids.length) {
+      const Revision = require('../models/Revision');
+      ids = (await Revision.distinct('localId', { supervisorId: req.user.id })).map(String);
+    }
+    req.user.localesSupervision = ids;
+    next();
+  } catch (error) {
+    console.error('Error cargando locales del supervisor:', error);
+    res.status(500).json({ error: 'Error en el servidor' });
+  }
+});
 
 const esGlobal = (user) => ROLES_GLOBALES.includes(user.rol);
 const idUsuario = (user) => String(user.id || user._id);
@@ -90,7 +110,8 @@ async function filtroAlcanceAmpliado(req) {
 
 // ¿La ve como administrador del local? (administrador, o mentor en un local que administra y que no evaluó él)
 function veComoAdministrador(req, m, adm) {
-  if (req.user.rol === 'administrador') return true;
+  // administrador y supervisor no ven las observaciones "sin filtro"
+  if (['administrador', 'supervisor'].includes(req.user.rol)) return true;
   return req.user.rol === 'mentor' && String(m.mentorId) !== idUsuario(req.user) && (adm || []).includes(String(m.localId));
 }
 
@@ -103,6 +124,7 @@ async function puedeVerReq(req, m) {
 function filtroAlcance(user) {
   if (esGlobal(user)) return {};
   if (user.rol === 'mentor') return { mentorId: oid(idUsuario(user)) };
+  if (user.rol === 'supervisor') return { localId: { $in: (user.localesSupervision || []).map(oid) }, esBorrador: false };
   // administrador
   return { localId: { $in: idsLocalesAsignados(user).map(oid) }, esBorrador: false };
 }
@@ -111,6 +133,7 @@ function puedeVer(user, m) {
   if (esGlobal(user)) return true;
   if (user.rol === 'mentor') return String(m.mentorId) === idUsuario(user);
   if (user.rol === 'administrador') return !m.esBorrador && idsLocalesAsignados(user).includes(String(m.localId));
+  if (user.rol === 'supervisor') return !m.esBorrador && (user.localesSupervision || []).includes(String(m.localId));
   return false;
 }
 
@@ -382,6 +405,7 @@ router.get('/compromisos', async (req, res) => {
 
     const yo = idUsuario(req.user);
     const miRolEn = (m) => (esGlobal(req.user) ? 'global'
+      : req.user.rol === 'supervisor' ? 'supervisor' // solo lectura
       : req.user.rol === 'administrador' ? 'administrador'
       : String(m.mentorId) === yo ? 'mentor' : 'administrador');
 
@@ -612,7 +636,7 @@ router.get('/', async (req, res) => {
     const lim = Math.min(Number(limit) || 50, 200);
     const skip = (Math.max(Number(page) || 1, 1) - 1) * lim;
     const [data, total] = await Promise.all([
-      Mentoria.find(query).select(camposOcultosEnListado(req.user, req.user.rol === 'administrador' || verAdministrados)).sort({ fechaMentoria: -1 }).skip(skip).limit(lim).lean(),
+      Mentoria.find(query).select(camposOcultosEnListado(req.user, ['administrador', 'supervisor'].includes(req.user.rol) || verAdministrados)).sort({ fechaMentoria: -1 }).skip(skip).limit(lim).lean(),
       Mentoria.countDocuments(query),
     ]);
     res.json({ data, total });
