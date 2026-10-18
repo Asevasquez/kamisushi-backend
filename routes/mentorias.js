@@ -24,8 +24,9 @@ const {
 // ────────────────────────────────────────────────────────────
 const ROLES_GLOBALES = ['gerencia', 'master'];
 const ROLES_CREAN = ['mentor', ...ROLES_GLOBALES];
-// supervisor: solo LECTURA de los compromisos de mentoría/tutoría de sus locales (para
-// "Todos los compromisos"). No crea, no envía evidencia, no revisa. El supervisor interno no entra.
+// supervisor: solo LECTURA de las mentorías/tutorías finalizadas y sus compromisos de TODOS
+// los locales (igual que ve todas las revisiones de supervisión). No crea, no envía evidencia,
+// no revisa, y no ve las observaciones "sin filtro". El supervisor interno no entra.
 const ROLES_MODULO = [...ROLES_CREAN, 'administrador', 'supervisor'];
 
 // Las observaciones "sin filtro" (SAC, Cocina, Liderazgo) son internas: el
@@ -42,24 +43,6 @@ function soloRoles(roles) {
 }
 
 router.use(verifyToken, soloRoles(ROLES_MODULO));
-
-// Supervisor: sus locales = los asignados; si no tiene, los locales donde ha hecho revisiones
-// (el mismo criterio que usa Estadísticas para el supervisor).
-router.use(async (req, res, next) => {
-  if (req.user.rol !== 'supervisor') return next();
-  try {
-    let ids = idsLocalesAsignados(req.user);
-    if (!ids.length) {
-      const Revision = require('../models/Revision');
-      ids = (await Revision.distinct('localId', { supervisorId: req.user.id })).map(String);
-    }
-    req.user.localesSupervision = ids;
-    next();
-  } catch (error) {
-    console.error('Error cargando locales del supervisor:', error);
-    res.status(500).json({ error: 'Error en el servidor' });
-  }
-});
 
 const esGlobal = (user) => ROLES_GLOBALES.includes(user.rol);
 const idUsuario = (user) => String(user.id || user._id);
@@ -124,7 +107,7 @@ async function puedeVerReq(req, m) {
 function filtroAlcance(user) {
   if (esGlobal(user)) return {};
   if (user.rol === 'mentor') return { mentorId: oid(idUsuario(user)) };
-  if (user.rol === 'supervisor') return { localId: { $in: (user.localesSupervision || []).map(oid) }, esBorrador: false };
+  if (user.rol === 'supervisor') return { esBorrador: false }; // todos los locales, solo finalizadas
   // administrador
   return { localId: { $in: idsLocalesAsignados(user).map(oid) }, esBorrador: false };
 }
@@ -133,7 +116,7 @@ function puedeVer(user, m) {
   if (esGlobal(user)) return true;
   if (user.rol === 'mentor') return String(m.mentorId) === idUsuario(user);
   if (user.rol === 'administrador') return !m.esBorrador && idsLocalesAsignados(user).includes(String(m.localId));
-  if (user.rol === 'supervisor') return !m.esBorrador && (user.localesSupervision || []).includes(String(m.localId));
+  if (user.rol === 'supervisor') return !m.esBorrador;
   return false;
 }
 
