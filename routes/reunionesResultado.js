@@ -13,7 +13,10 @@ const { SECCION_LABEL, estadoVisible, resumenReunion, contar, inicioDeHoy } = re
 const router = express.Router();
 
 const ROLES_GERENCIA = ['master', 'gerencia'];
-const ROLES_ACCESO = [...ROLES_GERENCIA, 'administrador'];
+// Rol que cumple compromisos: administrador (localesAsignados) y mentor (solo sus localesAdministrados;
+// los locales que mentorea o donde es tutor NO entran aquí)
+const ROLES_RESPONSABLES = ['administrador', 'mentor'];
+const ROLES_ACCESO = [...ROLES_GERENCIA, ...ROLES_RESPONSABLES];
 const SECCIONES = ReunionResultado.SECCIONES;
 
 const MAX_ARCHIVO_BYTES = 10 * 1024 * 1024; // 10 MB por archivo
@@ -34,7 +37,8 @@ router.use(verifyToken, authorize(...ROLES_ACCESO));
 
 const esGerencia = (user) => ROLES_GERENCIA.includes(user.rol);
 
-// null = sin restricción (Gerencia/Master). Array de ids = locales del administrador.
+// null = sin restricción (Gerencia/Master). Array de ids = locales que administra
+// (administrador → localesAsignados · mentor → localesAdministrados, vía localesDeSupervision).
 const localesPermitidos = (user) => (esGerencia(user) ? null : localesDeSupervision(user));
 
 const puedeVerLocal = (user, localId) => {
@@ -79,6 +83,15 @@ const normalizarCompromisos = (lista = [], user) => {
   });
   return { compromisos: out, errores };
 };
+
+// Responsables de un local: administradores + mentores que lo administran
+const responsablesDelLocal = (localId) => Usuario.find({
+  activo: true,
+  $or: [
+    { rol: 'administrador', localesAsignados: localId },
+    { rol: 'mentor', localesAdministrados: localId },
+  ],
+}).select('_id nombre email rol').sort({ nombre: 1 }).lean();
 
 const siguienteNumero = async () => {
   const ultimo = await ReunionResultado.findOne().sort({ numero: -1 }).select('numero').lean();
@@ -183,7 +196,7 @@ const manejarError = (res, error, contexto) => {
 
 // ───────────────────────── locales ─────────────────────────
 
-// GET /mis-locales — Gerencia/Master: todos; Administrador: sus locales
+// GET /mis-locales — Gerencia/Master: todos; Administrador/Mentor: los locales que administra
 router.get('/mis-locales', async (req, res) => {
   try {
     const permitidos = localesPermitidos(req.user);
@@ -201,9 +214,7 @@ router.get('/locales/:localId/administradores', async (req, res) => {
     const { localId } = req.params;
     if (!isValidId(localId)) return res.status(400).json({ error: 'localId inválido' });
     if (!puedeVerLocal(req.user, localId)) return res.status(403).json({ error: 'Sin acceso a este local' });
-    const admins = await Usuario.find({ rol: 'administrador', activo: true, localesAsignados: localId })
-      .select('_id nombre email').sort({ nombre: 1 }).lean();
-    res.json(admins);
+    res.json(await responsablesDelLocal(localId));
   } catch (error) {
     manejarError(res, error, 'administradores del local');
   }
@@ -304,8 +315,7 @@ router.get('/:id', async (req, res) => {
     if (!puedeVerLocal(req.user, r.localId)) return res.status(403).json({ error: 'Sin acceso a esta reunión' });
     if (!esGerencia(req.user) && r.estado !== 'finalizada') return res.status(404).json({ error: 'Reunión no encontrada' });
 
-    const administradores = await Usuario.find({ rol: 'administrador', activo: true, localesAsignados: r.localId._id })
-      .select('_id nombre').lean();
+    const administradores = await responsablesDelLocal(r.localId._id);
     res.json({ ...serializarReunion(r, { conCompromisos: true }), administradores });
   } catch (error) {
     manejarError(res, error, 'detalle de reunión');
@@ -407,9 +417,9 @@ router.delete('/:id', authorize(...ROLES_GERENCIA), async (req, res) => {
 
 // ───────────────────────── evidencia y validación ─────────────────────────
 
-// POST /:id/compromisos/:cid/evidencia — Administrador del local (o Master)
+// POST /:id/compromisos/:cid/evidencia — Administrador o Mentor que administra el local (o Master)
 // Body: { comentario, archivos: [{ base64, mimeType, nombre }] }
-router.post('/:id/compromisos/:cid/evidencia', authorize('administrador', 'master'), async (req, res) => {
+router.post('/:id/compromisos/:cid/evidencia', authorize(...ROLES_RESPONSABLES, 'master'), async (req, res) => {
   const guardados = [];
   try {
     const { id, cid } = req.params;

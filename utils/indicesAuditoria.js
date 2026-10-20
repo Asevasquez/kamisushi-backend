@@ -39,4 +39,20 @@ async function asegurarIndiceRevision(collection, log = console) {
   }
 }
 
-module.exports = { asegurarIndiceRevision, NOMBRE_INDICE_REVISION: NOMBRE };
+// Un mismo envío (clientId) de un mismo auditor se guarda una sola vez. Parcial: las auditorías
+// antiguas, o las de una app anterior, no tienen clientId y no entran en el índice.
+const NOMBRE_CLIENT = 'auditorId_1_clientId_1';
+async function asegurarIndiceClientId(collection, log = console) {
+  try {
+    await collection.createIndex(
+      { auditorId: 1, clientId: 1 },
+      { name: NOMBRE_CLIENT, unique: true, partialFilterExpression: { clientId: { $type: 'string' } } }
+    );
+    return true;
+  } catch (e) {
+    log.error('Auditoría: no se pudo asegurar el índice de clientId:', e.message);
+    return false;
+  }
+}
+
+module.exports = { asegurarIndiceRevision, asegurarIndiceClientId, NOMBRE_INDICE_REVISION: NOMBRE, NOMBRE_INDICE_CLIENTID: NOMBRE_CLIENT };

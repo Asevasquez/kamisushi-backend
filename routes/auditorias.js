@@ -397,9 +397,21 @@ router.get('/:id/pdf', async (req, res) => {
 // POST / — crear una auditoría nueva (borrador o directo finalizada)
 // ────────────────────────────────────────────────────────────
 router.post('/', async (req, res) => {
+  // Clave del envío (la genera la app): permite reconocer un envío repetido
+  const clientId = typeof (req.body && req.body.clientId) === 'string' ? req.body.clientId.trim().slice(0, 80) : '';
   try {
     req.body = procesarFotosEnObjeto(req.body);
     const { revisionId } = req.body;
+
+    // Si este mismo envío ya se guardó (doble toque, o reintento porque la respuesta no llegó),
+    // se devuelve la auditoría que ya existe en vez de crear una copia.
+    if (clientId) {
+      const previa = await Auditoria.findOne({ auditorId: req.user.id, clientId });
+      if (previa) {
+        console.log('Auditoría repetida ignorada (mismo envío):', previa._id.toString(), '| Local:', previa.localNombre, '| Auditor:', req.user.nombre);
+        return res.status(200).json(previa);
+      }
+    }
 
     // La auditoría se hace sobre una supervisión previa (revisionId) o, si no se manda,
     // directamente sobre un local (localId): "auditoría sin supervisión previa".
@@ -436,6 +448,7 @@ router.post('/', async (req, res) => {
 
     const auditoria = new Auditoria({
       ...contexto,
+      ...(clientId ? { clientId } : {}),
       auditorId: req.user.id,
       auditorNombre: req.user.nombre,
       servicioCliente: req.body.servicioCliente || {},
@@ -450,6 +463,11 @@ router.post('/', async (req, res) => {
     res.status(201).json(auditoria);
   } catch (error) {
     if (error.code === 11000) {
+      // Dos envíos iguales llegaron casi al mismo tiempo: gana el primero y al segundo se le devuelve ese
+      if (clientId && error.keyPattern && error.keyPattern.clientId) {
+        const previa = await Auditoria.findOne({ auditorId: req.user.id, clientId }).catch(() => null);
+        if (previa) return res.status(200).json(previa);
+      }
       return res.status(400).json({
         error: req.body && req.body.revisionId
           ? 'Esta revisión ya fue auditada'

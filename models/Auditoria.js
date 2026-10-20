@@ -24,6 +24,12 @@ const auditoriaSchema = new mongoose.Schema({
   // Cuando existe, hay una sola auditoría por revisión (índice único parcial, abajo).
   revisionId: { type: mongoose.Schema.Types.ObjectId, ref: 'Revision' },
 
+  // Clave que genera la app para cada auditoría que se llena. Si el mismo envío llega más de una
+  // vez (doble toque, reintento por mala señal), se devuelve la auditoría ya creada en vez de
+  // crear otra. Hace falta sobre todo en las auditorías SIN supervisión previa, que no tienen
+  // otra clave natural (a diferencia de las de una revisión, que son una por revisión).
+  clientId: { type: String, maxlength: 80 },
+
   // Datos de la revisión original, copiados al momento de auditar (para no
   // depender de un populate constante y para que el informe/dashboard no
   // cambien si la revisión original se edita después). Sin supervisión previa,
@@ -74,8 +80,11 @@ const Auditoria = mongoose.model('Auditoria', auditoriaSchema);
 // Impide dos auditorías para la misma revisión a nivel de base de datos (evita
 // condiciones de carrera), pero solo entre las que tienen supervisión previa:
 // las auditorías sin supervisión previa no tienen revisionId y pueden ser muchas.
-const { asegurarIndiceRevision } = require('../utils/indicesAuditoria');
-const asegurarIndices = () => asegurarIndiceRevision(Auditoria.collection);
+const { asegurarIndiceRevision, asegurarIndiceClientId } = require('../utils/indicesAuditoria');
+const asegurarIndices = async () => {
+  await asegurarIndiceRevision(Auditoria.collection);
+  await asegurarIndiceClientId(Auditoria.collection);
+};
 if (mongoose.connection.readyState === 1) asegurarIndices();
 else mongoose.connection.once('open', asegurarIndices);
 
