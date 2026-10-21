@@ -15,6 +15,22 @@ const {
 // Inicio y fin de la revisión (hora + ubicación) se fijan una sola vez; ver el archivo.
 const { mezclarGeolocalizacion, geoPlana } = require('../utils/geoRevision');
 
+// ── Envíos repetidos ──────────────────────────────────────────────
+// La app genera un identificador (24 caracteres hexadecimales, como un ObjectId) para cada revisión
+// NUEVA y lo manda con el envío ("idCliente"). Se usa como _id de la revisión: si el mismo envío
+// llega más de una vez (doble toque, reintento porque la respuesta no llegó, cola sin conexión
+// sincronizada desde dos pantallas a la vez), Mongo rechaza el segundo por _id duplicado y se
+// devuelve la revisión que ya existe, en vez de crear una copia.
+const idDeCliente = (v) => (typeof v === 'string' && /^[0-9a-f]{24}$/i.test(v.trim()) ? v.trim().toLowerCase() : null);
+
+// { previa } = ya existe y es del mismo usuario (o master/gerencia) · { conflicto } = ese id es de otra persona
+async function envioPrevio(idCliente, user) {
+  const previa = await Revision.findById(idCliente);
+  if (!previa) return {};
+  const esSuya = String(previa.creadoPorId) === String(user.id);
+  return esSuya || ['master', 'gerencia'].includes(user.rol) ? { previa } : { conflicto: true };
+}
+
 // ==================== FUNCIONES AUXILIARES ====================
 
 function getTextoPreguntaSC(id) {
@@ -801,7 +817,18 @@ router.get('/:id/pdf', verifyToken, async (req, res) => {
 });
 
 router.post('/borrador', verifyToken, async (req, res) => {
+  const idCliente = idDeCliente(req.body && req.body.idCliente);
   try {
+    if (req.body) delete req.body.idCliente;
+    // Antes que nada (y antes de procesar fotos): ¿este mismo envío ya se guardó?
+    if (idCliente) {
+      const { previa, conflicto } = await envioPrevio(idCliente, req.user);
+      if (conflicto) return res.status(409).json({ error: 'Identificador de revisión ya utilizado' });
+      if (previa) {
+        console.log('Borrador repetido ignorado (mismo envío):', idCliente, '| Usuario:', req.user.nombre);
+        return res.status(200).json(previa);
+      }
+    }
     req.body = procesarFotosEnObjeto(req.body); // red de seguridad: convierte a archivo cualquier base64 que haya quedado embebido
 
     // Compromisos: se validan ANTES de guardar para no dejar una revisión a medias.
@@ -824,6 +851,7 @@ router.post('/borrador', verifyToken, async (req, res) => {
 
     const borradorData = {
       ...req.body,
+      ...(idCliente ? { _id: new mongoose.Types.ObjectId(idCliente) } : {}),
       supervisorId: supervisorId ? new mongoose.Types.ObjectId(supervisorId) : null,
       supervisorNombre: supervisorNombre,
       localId: req.body.localId ? new mongoose.Types.ObjectId(req.body.localId) : null,
@@ -842,6 +870,11 @@ router.post('/borrador', verifyToken, async (req, res) => {
     if (compromisosValidados) await sincronizarCompromisos({ revision: borrador, items: compromisosValidados, finalizada: false });
     res.status(201).json(borrador);
   } catch (error) {
+    // Dos envíos iguales llegaron casi al mismo tiempo: gana el primero y al segundo se le devuelve ese
+    if (error.code === 11000 && idCliente) {
+      const { previa } = await envioPrevio(idCliente, req.user).catch(() => ({}));
+      if (previa) return res.status(200).json(previa);
+    }
     console.error('Error en borrador:', error);
     res.status(500).json({ error: error.message });
   }
@@ -900,12 +933,24 @@ router.put('/borrador/:id', verifyToken, async (req, res) => {
 });
 
 router.post('/', verifyToken, async (req, res) => {
+  const idCliente = idDeCliente(req.body && req.body.idCliente);
   console.log('Creando revisión directa. Local:', req.body.localId, '| Usuario:', req.user.nombre, '(', req.user.rol, ')');
   try {
-    req.body = procesarFotosEnObjeto(req.body);
     if (req.user.rol !== 'supervisor' && req.user.rol !== 'master' && req.user.rol !== 'gerencia') {
       return res.status(403).json({ error: 'No autorizado para crear revisiones' });
     }
+    delete req.body.idCliente;
+    // Antes que nada (y antes de procesar fotos): ¿este mismo envío ya se guardó?
+    if (idCliente) {
+      const { previa, conflicto } = await envioPrevio(idCliente, req.user);
+      if (conflicto) return res.status(409).json({ error: 'Identificador de revisión ya utilizado' });
+      if (previa) {
+        console.log('Revisión repetida ignorada (mismo envío):', idCliente, '| Usuario:', req.user.nombre);
+        return res.status(200).json(previa);
+      }
+    }
+    req.body = procesarFotosEnObjeto(req.body);
+
 
     const compromisosPayload = req.body.compromisos;
     delete req.body.compromisos;
@@ -926,6 +971,7 @@ router.post('/', verifyToken, async (req, res) => {
     }
 
     const revisionData = {
+      ...(idCliente ? { _id: new mongoose.Types.ObjectId(idCliente) } : {}),
       fechaRevision: new Date(req.body.fechaRevision) || new Date(),
       localId: new mongoose.Types.ObjectId(req.body.localId),
       supervisorId: supervisorId ? new mongoose.Types.ObjectId(supervisorId) : null,
@@ -954,6 +1000,11 @@ router.post('/', verifyToken, async (req, res) => {
     console.log('Revisión creada con éxito:', savedRevision._id.toString());
     res.status(201).json(savedRevision);
   } catch (error) {
+    // Dos envíos iguales llegaron casi al mismo tiempo: gana el primero y al segundo se le devuelve ese
+    if (error.code === 11000 && idCliente) {
+      const { previa } = await envioPrevio(idCliente, req.user).catch(() => ({}));
+      if (previa) return res.status(200).json(previa);
+    }
     console.error('Error creando revisión:', error);
     res.status(500).json({ error: error.message });
   }
