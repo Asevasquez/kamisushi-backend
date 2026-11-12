@@ -7,11 +7,13 @@ const mongoose = require('mongoose');
 const Compromiso = require('../models/Compromiso');
 const Local = require('../models/Local');
 
-const SECCIONES = ['servicioCliente', 'cocina', 'general'];
-const SECCION_LABEL = { servicioCliente: 'Servicio al Cliente', cocina: 'Cocina', general: 'Generales' };
+const SECCIONES = ['servicioCliente', 'cocina', 'general', 'producto'];
+// Las revisiones solo pueden crear estas; 'producto' nace únicamente en una Auditoría de Producto.
+const SECCIONES_REVISION = ['servicioCliente', 'cocina', 'general'];
+const SECCION_LABEL = { servicioCliente: 'Servicio al Cliente', cocina: 'Cocina', general: 'Generales', producto: 'Producto' };
 // Máximo de compromisos por sección. Para cambiar el límite de una sección basta con cambiarlo aquí
 // (y en la app, en SECCIONES_COMPROMISO).
-const MAX_POR_SECCION = { servicioCliente: 3, cocina: 3, general: 5 };
+const MAX_POR_SECCION = { servicioCliente: 3, cocina: 3, general: 5, producto: 3 };
 const MAX_TEXTO = 200;
 const MAX_RESPONSABLE = 80;
 const META_CUMPLIMIENTO = 80;   // % a tiempo: Bueno >= 80
@@ -71,7 +73,9 @@ function esEditable(c) {
 // ─── Validación del payload que manda la app ─────────────────────────────
 // items: [{ clientId, seccion, texto, responsableNombre, fechaLimite }]
 // Devuelve { ok:true, items:[normalizados] } o { ok:false, error }.
-async function validarCompromisos(items, { localId, fechaRevision } = {}) {
+// secciones: las que admite quien llama (revisiones por defecto; la Auditoría de Producto pasa ['producto'])
+// etiqueta: cómo se llama el documento de origen en los mensajes ('revisión' | 'auditoría')
+async function validarCompromisos(items, { localId, fechaRevision, secciones = SECCIONES_REVISION, etiqueta = 'revisión' } = {}) {
   if (!Array.isArray(items)) return { ok: false, error: 'Los compromisos deben enviarse como una lista' };
 
   const porSeccion = Object.fromEntries(SECCIONES.map((sec) => [sec, 0]));
@@ -83,7 +87,7 @@ async function validarCompromisos(items, { localId, fechaRevision } = {}) {
     const it = items[i] || {};
     const nombre = `Compromiso ${i + 1}`;
 
-    if (!SECCIONES.includes(it.seccion)) return { ok: false, error: `${nombre}: sección inválida` };
+    if (!secciones.includes(it.seccion)) return { ok: false, error: `${nombre}: sección inválida` };
     porSeccion[it.seccion]++;
     if (porSeccion[it.seccion] > MAX_POR_SECCION[it.seccion]) {
       return { ok: false, error: `Máximo ${MAX_POR_SECCION[it.seccion]} compromisos en ${SECCION_LABEL[it.seccion]}` };
@@ -100,7 +104,7 @@ async function validarCompromisos(items, { localId, fechaRevision } = {}) {
 
     const fl = normalizarFechaEntrada(it.fechaLimite);
     if (!fl) return { ok: false, error: `${nombre}: indica la fecha límite` };
-    if (fl <= fechaRevStr) return { ok: false, error: `${nombre}: la fecha límite debe ser posterior a la fecha de la revisión` };
+    if (fl <= fechaRevStr) return { ok: false, error: `${nombre}: la fecha límite debe ser posterior a la fecha de la ${etiqueta}` };
 
     const clientId = String(it.clientId || '').trim() || new mongoose.Types.ObjectId().toString();
     if (vistos.has(clientId)) return { ok: false, error: `${nombre}: está repetido` };
@@ -110,7 +114,7 @@ async function validarCompromisos(items, { localId, fechaRevision } = {}) {
   }
 
   if (normalizados.length > 0) {
-    if (!mongoose.isValidObjectId(localId)) return { ok: false, error: 'Falta el local de la revisión' };
+    if (!mongoose.isValidObjectId(localId)) return { ok: false, error: `Falta el local de la ${etiqueta}` };
   }
   return { ok: true, items: normalizados };
 }
@@ -130,7 +134,7 @@ async function datosBase(revision) {
 // Deja en la base exactamente los compromisos de la revisión. Los que ya
 // tienen seguimiento (evidencia, corrección, cierre) no se modifican ni se
 // eliminan: lo acordado no puede cambiar una vez que hay trabajo encima.
-async function sincronizarCompromisos({ revision, items, finalizada }) {
+async function sincronizarCompromisos({ revision, items, finalizada, origen = 'revision' }) {
   const revisionId = revision._id;
   const base = await datosBase(revision);
   const existentes = await Compromiso.find({ revisionId });
@@ -151,6 +155,7 @@ async function sincronizarCompromisos({ revision, items, finalizada }) {
       await Compromiso.create({
         ...datos,
         revisionId,
+        origen,
         clientId: it.clientId,
         visible: !!finalizada,
         historial: [{ accion: 'acordado', usuarioId: revision.supervisorId, usuarioNombre: revision.supervisorNombre || '' }],
@@ -396,12 +401,12 @@ function puedeEliminar({ rol }) {
 function puedeRevisar({ rol, userId }, c) {
   if (c.estado !== 'en_revision') return false;
   if (['master', 'gerencia'].includes(rol)) return true;
-  return ['supervisor', 'supervisorinterno'].includes(rol) && String(c.supervisorId) === String(userId);
+  return ['supervisor', 'supervisorinterno', 'producto'].includes(rol) && String(c.supervisorId) === String(userId);
 }
 
 module.exports = {
-  SECCIONES, SECCION_LABEL, MAX_POR_SECCION, MAX_TEXTO, MAX_RESPONSABLE, META_CUMPLIMIENTO, UMBRAL_REGULAR, DIA_MS,
-  fechaChileStr, strAFecha, fechaAStr, hoyReferencia, normalizarFechaEntrada, diasEntre, redondear1,
+  SECCIONES, SECCIONES_REVISION, SECCION_LABEL, MAX_POR_SECCION, MAX_TEXTO, MAX_RESPONSABLE, META_CUMPLIMIENTO, UMBRAL_REGULAR, DIA_MS,
+  fechaChileStr, strAFecha, fechaAStr, hoyReferencia, esFechaValida, normalizarFechaEntrada, diasEntre, redondear1,
   estadoVisible, diasRestantes, evaluar, esEditable,
   validarCompromisos, sincronizarCompromisos, publicarCompromisos, listarCompromisosDeRevision,
   acumular, mesesRango, calcularResumen,

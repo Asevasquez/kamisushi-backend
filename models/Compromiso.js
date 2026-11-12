@@ -1,7 +1,8 @@
 // backend/models/Compromiso.js
 //
-// Un compromiso acordado durante una revisión (máx. 3 por sección: Servicio
-// al Cliente y Cocina). Vive en su propia colección — y no dentro de
+// Un compromiso acordado durante una revisión (Servicio al Cliente, Cocina y Generales) o
+// al final de una Auditoría de Producto (sección 'producto', máx. 3). En el segundo caso
+// "revisionId" guarda el _id de la auditoría de producto y "origen" vale 'producto'. Vive en su propia colección — y no dentro de
 // Revision — para que su seguimiento (evidencias, validaciones, historial)
 // sea independiente de la revisión y se pueda consultar/agregar por local,
 // administrador o supervisora sin cargar revisiones completas.
@@ -39,6 +40,8 @@ const compromisoSchema = new mongoose.Schema({
   // Id generado por la app al crear el compromiso: hace idempotente la
   // sincronización (reintentos, cola offline) sin duplicar compromisos.
   clientId: { type: String, required: true },
+  // De dónde viene el compromiso. Los anteriores a este campo no lo tienen y son de revisión.
+  origen: { type: String, enum: ['revision', 'producto'], default: 'revision' },
 
   // Datos de la revisión, copiados para no depender de un populate
   localId: { type: mongoose.Schema.Types.ObjectId, ref: 'Local', required: true },
@@ -47,7 +50,7 @@ const compromisoSchema = new mongoose.Schema({
   supervisorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Usuario' },
   supervisorNombre: { type: String, default: '' },
 
-  seccion: { type: String, enum: ['servicioCliente', 'cocina', 'general'], required: true },
+  seccion: { type: String, enum: ['servicioCliente', 'cocina', 'general', 'producto'], required: true },
   texto: { type: String, required: true, maxlength: 200 },
   // Texto libre: quien escribe el compromiso indica el nombre de la persona que lo toma.
   responsableNombre: { type: String, required: true, trim: true, maxlength: 80 },
