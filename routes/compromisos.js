@@ -1,6 +1,6 @@
 // backend/routes/compromisos.js
 //
-// Seguimiento de los compromisos acordados en las revisiones.
+// Seguimiento de los compromisos acordados en las revisiones y en las Auditorías de Producto.
 //   - La supervisora los crea dentro de la revisión (rutas de revisiones.js) y
 //     escribe a mano el nombre de quien toma cada compromiso.
 //   - El administrador del local (o el mentor, en los locales que administra)
@@ -58,6 +58,9 @@ function filtrosOpcionales(req) {
   if (q.localId && mongoose.isValidObjectId(q.localId)) and.push({ localId: oid(q.localId) });
   if (q.supervisorId && mongoose.isValidObjectId(q.supervisorId)) and.push({ supervisorId: oid(q.supervisorId) });
   if (H.SECCIONES.includes(q.seccion)) and.push({ seccion: q.seccion });
+  // Los compromisos anteriores al campo "origen" no lo tienen: cuentan como de revisión.
+  if (q.origen === 'producto') and.push({ origen: 'producto' });
+  else if (q.origen === 'revision') and.push({ origen: { $ne: 'producto' } });
   if (req.localesDeAdministrador) and.push({ localId: { $in: req.localesDeAdministrador } });
   return and;
 }
@@ -91,6 +94,9 @@ function serializar(c, req, hoyStr, conDetalle = false) {
   const out = {
     _id: c._id,
     revisionId: c.revisionId,
+    // 'revision' | 'producto'. Si es de producto, revisionId es el id de la auditoría de producto.
+    origen: c.origen || 'revision',
+    origenLabel: c.origen === 'producto' ? 'Auditoría de Producto' : 'Revisión',
     localId: c.localId,
     localNombre: c.localNombre,
     fechaRevision: c.fechaRevision,
