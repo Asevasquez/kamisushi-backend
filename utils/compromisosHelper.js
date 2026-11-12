@@ -274,7 +274,8 @@ function ordenarPeorPrimero(a, b) {
 // administradores: [{ administradorId, nombre, esMentor, localesIds }] — el ranking de
 // administradores se calcula por los locales que administra cada uno (el
 // responsable de cada compromiso es texto libre y no sirve para agrupar).
-function calcularResumen(docs, { hoyStr = fechaChileStr(), meses = 6, global = false, top = 10, administradores = [] } = {}) {
+// secciones: las que se listan en "por sección" (revisión: sus 3; producto: solo "producto"; sin indicar: todas)
+function calcularResumen(docs, { hoyStr = fechaChileStr(), meses = 6, global = false, top = 10, administradores = [], secciones = SECCIONES } = {}) {
   const total = acumular(docs, hoyStr);
 
   const claves = mesesRango(hoyStr, meses);
@@ -286,7 +287,7 @@ function calcularResumen(docs, { hoyStr = fechaChileStr(), meses = 6, global = f
   const ult = serie[serie.length - 1];
   const pen = serie[serie.length - 2];
 
-  const porSeccion = SECCIONES.map((s) => {
+  const porSeccion = secciones.map((s) => {
     const a = acumular(docs.filter((c) => c.seccion === s), hoyStr);
     return { seccion: s, label: SECCION_LABEL[s], asumidos: a.asumidos, pctATiempo: a.pctATiempo, evaluacion: a.evaluacion };
   });

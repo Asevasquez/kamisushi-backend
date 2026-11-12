@@ -51,6 +51,16 @@ const filtroBase = (req, opciones = {}) => H.filtroPorRol({
   rol: req.user.rol, userId: req.user.id, alcance: req.alcance, alcanceParam: req.query.alcance, ...opciones,
 });
 
+// Origen de los compromisos de la consulta: 'producto', 'revision' (todo lo que no es de producto, incluidos
+// los anteriores al campo "origen") o ninguno (todos). Las pantallas de Producto y de Revisión/Todos los
+// compromisos lo piden explícitamente para no mezclarse.
+const filtroOrigen = (q) => {
+  if (q.origen === 'producto') return [{ origen: 'producto' }];
+  if (q.origen === 'revision') return [{ origen: { $ne: 'producto' } }];
+  return [];
+};
+const seccionesDeOrigen = (q) => (q.origen === 'producto' ? ['producto'] : q.origen === 'revision' ? H.SECCIONES_REVISION : H.SECCIONES);
+
 // Filtros opcionales comunes a la lista y al resumen.
 function filtrosOpcionales(req) {
   const q = req.query;
@@ -58,9 +68,7 @@ function filtrosOpcionales(req) {
   if (q.localId && mongoose.isValidObjectId(q.localId)) and.push({ localId: oid(q.localId) });
   if (q.supervisorId && mongoose.isValidObjectId(q.supervisorId)) and.push({ supervisorId: oid(q.supervisorId) });
   if (H.SECCIONES.includes(q.seccion)) and.push({ seccion: q.seccion });
-  // Los compromisos anteriores al campo "origen" no lo tienen: cuentan como de revisión.
-  if (q.origen === 'producto') and.push({ origen: 'producto' });
-  else if (q.origen === 'revision') and.push({ origen: { $ne: 'producto' } });
+  and.push(...filtroOrigen(q));
   if (req.localesDeAdministrador) and.push({ localId: { $in: req.localesDeAdministrador } });
   return and;
 }
@@ -187,7 +195,7 @@ router.get('/resumen', async (req, res) => {
 
     const global = ROLES_ADMIN_TOTAL.includes(req.user.rol);
     const administradores = global ? await cargarAdministradores() : [];
-    res.json(H.calcularResumen(docs, { hoyStr, meses, global, top, administradores }));
+    res.json(H.calcularResumen(docs, { hoyStr, meses, global, top, administradores, secciones: seccionesDeOrigen(req.query) }));
   } catch (error) {
     console.error('Error en resumen de compromisos:', error);
     res.status(500).json({ error: error.message });
@@ -201,7 +209,7 @@ router.get('/resumen', async (req, res) => {
 // ────────────────────────────────────────────────────────────
 router.get('/filtros', async (req, res) => {
   try {
-    const docs = await Compromiso.find(filtroBase(req)).select('localId localNombre supervisorId supervisorNombre').lean();
+    const docs = await Compromiso.find({ $and: [filtroBase(req), ...filtroOrigen(req.query)] }).select('localId localNombre supervisorId supervisorNombre').lean();
     const unicos = (idKey, nombreKey) => {
       const mapa = new Map();
       docs.forEach((d) => { if (d[idKey] && !mapa.has(String(d[idKey]))) mapa.set(String(d[idKey]), d[nombreKey] || ''); });
