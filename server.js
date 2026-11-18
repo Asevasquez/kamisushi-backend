@@ -43,6 +43,7 @@ app.use('/api/mentorias', require('./routes/mentorias'));
 app.use('/api/compromisos', require('./routes/compromisos'));
 app.use('/api/reuniones-resultado', require('./routes/reunionesResultado'));
 app.use('/api/auditorias-producto', require('./routes/auditoriasProducto'));
+app.use('/api/eerr', require('./routes/eerr'));
 
 
 // Ruta de prueba

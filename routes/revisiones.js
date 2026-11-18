@@ -7,6 +7,7 @@ const PDFDocument = require('pdfkit');
 const Revision = require('../models/Revision');
 const Local = require('../models/Local');
 const { verifyToken, authorize, localesDeSupervision, ROLES_CON_LOCALES_ASIGNADOS } = require('../middleware/auth');
+const { resolverFiltroLocales } = require('../utils/filtroLocales');
 const { procesarFotosEnObjeto } = require('./upload');
 const Compromiso = require('../models/Compromiso');
 const {
@@ -688,7 +689,7 @@ router.get('/estadisticas-por-local', verifyToken, async (req, res) => {
 
 router.get('/', verifyToken, async (req, res) => {
   try {
-    const { localId, supervisorId, fechaInicio, fechaFin, esBorrador, page = 1, limit = 10 } = req.query;
+    const { supervisorId, fechaInicio, fechaFin, esBorrador, page = 1, limit = 10 } = req.query;
     let query = {};
     let localesPermitidos = null; // null = sin restricción (master/gerencia)
 
@@ -701,15 +702,11 @@ router.get('/', verifyToken, async (req, res) => {
       localesPermitidos = asignados;
     }
 
-    // Filtro de local: valida contra los permisos del administrador antes de aplicarlo
-    if (localId) {
-      if (localesPermitidos && !localesPermitidos.includes(localId)) {
-        return res.status(403).json({ error: 'No tienes acceso a este local' });
-      }
-      query.localId = new mongoose.Types.ObjectId(localId);
-    } else if (localesPermitidos) {
-      query.localId = { $in: localesPermitidos.map(id => new mongoose.Types.ObjectId(id)) };
-    }
+    // Filtro de local (uno: localId, o varios: localIds separados por coma): se valida contra los permisos de
+    // la persona antes de aplicarlo y nunca amplía lo que puede ver
+    const filtroLocal = resolverFiltroLocales(req.query, localesPermitidos);
+    if (filtroLocal.error) return res.status(filtroLocal.error.status).json({ error: filtroLocal.error.mensaje });
+    if (filtroLocal.filtro) query.localId = filtroLocal.filtro;
 
     if (supervisorId) {
       query.supervisorId = new mongoose.Types.ObjectId(supervisorId);
