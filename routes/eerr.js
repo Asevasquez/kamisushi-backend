@@ -63,12 +63,17 @@ router.post('/cargar', permitir(ROLES_CARGAR), (req, res) => {
       // 1b) Se valida cada registro ANTES de borrar nada: un local y mes repetido, un concepto que Mongoose no
       //     acepta (por ejemplo con un punto en el nombre) o un dato obligatorio faltante harían fallar el guardado
       //     cuando los meses anteriores ya estuvieran borrados.
+      //     Cada 20 registros se cede el turno al resto del servidor: validar ~1000 registros de golpe lo dejaría
+      //     cerca de 1 s sin atender a nadie (otros usuarios incluidos).
+      const cederTurno = () => new Promise((resolve) => setImmediate(resolve));
       const vistos = new Set();
+      let validados = 0;
       for (const r of registros) {
         const clave = `${r.sucursal}|${r.periodo}`;
         if (vistos.has(clave)) throw new Error(`El archivo trae más de una fila para ${r.sucursal} en el período ${r.periodo}`);
         vistos.add(clave);
         await new EerrMensual(r).validate();
+        if (++validados % 20 === 0) await cederTurno();
       }
 
       // 2) Reemplazo: solo los meses que trae el archivo, o todo el histórico. Se guarda un respaldo de lo que se
@@ -78,9 +83,11 @@ router.post('/cargar', permitir(ROLES_CARGAR), (req, res) => {
       const respaldo = await EerrMensual.find(filtro).lean();
       try {
         await EerrMensual.deleteMany(filtro);
-        for (let i = 0; i < registros.length; i += 1000) {
-          const lote = registros.slice(i, i + 1000).map((r) => ({ ...r, carga: cargaId }));
+        // Lotes pequeños (cada registro trae ~300 conceptos de detalle) y cediendo el turno entre uno y otro
+        for (let i = 0; i < registros.length; i += 250) {
+          const lote = registros.slice(i, i + 250).map((r) => ({ ...r, carga: cargaId }));
           await EerrMensual.insertMany(lote, { ordered: false });
+          await cederTurno();
         }
       } catch (errGuardado) {
         try {
