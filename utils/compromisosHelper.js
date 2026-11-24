@@ -382,6 +382,9 @@ function filtroPorRol({ rol, userId, alcance, alcanceParam, incluirMentoria = fa
     f.localId = { $in: ids };
     return f;
   }
+  // Auditora de producto: TODOS los compromisos de producto (no solo los de sus auditorías), para validar la
+  // evidencia o cerrarlos ella misma. Nunca ve compromisos de revisión.
+  if (rol === 'producto') { f.origen = 'producto'; return f; }
   f.localId = { $in: [] }; // cualquier otro rol: nada
   return f;
 }
@@ -398,11 +401,24 @@ function puedeEliminar({ rol }) {
   return ['master', 'gerencia'].includes(rol);
 }
 
-// Validar: quien creó la revisión, gerencia o master.
+// Validar la evidencia enviada a la plataforma: quien creó la revisión, gerencia o master. La auditora de producto
+// valida cualquier compromiso de producto (no solo los de sus auditorías).
 function puedeRevisar({ rol, userId }, c) {
   if (c.estado !== 'en_revision') return false;
   if (['master', 'gerencia'].includes(rol)) return true;
-  return ['supervisor', 'supervisorinterno', 'producto'].includes(rol) && String(c.supervisorId) === String(userId);
+  if (rol === 'producto') return c.origen === 'producto';
+  return ['supervisor', 'supervisorinterno'].includes(rol) && String(c.supervisorId) === String(userId);
+}
+
+// ¿Es un compromiso de producto sobre el que la auditora puede actuar? (la regla de permiso, sin mirar el estado)
+function esAuditoraDeProducto({ rol }, c) {
+  return rol === 'producto' && c.origen === 'producto';
+}
+
+// Cerrar sin evidencia en la plataforma: la auditora de producto, en un compromiso de producto que sigue abierto
+// (o vencido). Cuando ya hay evidencia en la plataforma se usa "validar" (aprobar o pedir corrección).
+function puedeCerrarDirecto(permisos, c) {
+  return esAuditoraDeProducto(permisos, c) && c.estado === 'abierto';
 }
 
 module.exports = {
@@ -412,4 +428,5 @@ module.exports = {
   validarCompromisos, sincronizarCompromisos, publicarCompromisos, listarCompromisosDeRevision,
   acumular, mesesRango, calcularResumen,
   idStr, localesComoAdmin, alcanceDeUsuario, filtroPorRol, puedeEnviarEvidencia, puedeRevisar, puedeEliminar,
+  esAuditoraDeProducto, puedeCerrarDirecto,
 };

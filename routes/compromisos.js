@@ -6,6 +6,8 @@
 //   - El administrador del local (o el mentor, en los locales que administra)
 //     sube la evidencia.
 //   - Quien creó la revisión (o gerencia/master) valida: aprueba o pide corrección.
+//   - La auditora de producto ve y valida TODOS los compromisos de producto y, si recibió la evidencia por otro medio
+//     (WhatsApp) o la vio en persona, puede cerrarlos directamente (PUT /:id/cerrar) sin que haya evidencia en la web.
 //   - Gerencia/master ven todo. El mentor ve además, en solo lectura, los
 //     locales que mentorea (sus locales asignados, como en Mentorías) y los que tutorea.
 const express = require('express');
@@ -17,8 +19,8 @@ const { verifyToken } = require('../middleware/auth');
 const { procesarFotosEnObjeto } = require('./upload');
 const H = require('../utils/compromisosHelper');
 
-// 'auditor' no tiene acceso.
-const ROLES_PERMITIDOS = ['master', 'gerencia', 'supervisor', 'supervisorinterno', 'administrador', 'mentor'];
+// 'auditor' no tiene acceso. 'producto' ve y gestiona todos los compromisos de producto (no los de revisión).
+const ROLES_PERMITIDOS = ['master', 'gerencia', 'supervisor', 'supervisorinterno', 'administrador', 'mentor', 'producto'];
 const ROLES_ADMIN_TOTAL = ['master', 'gerencia'];
 
 const oid = (v) => new mongoose.Types.ObjectId(String(v));
@@ -124,7 +126,10 @@ function serializar(c, req, hoyStr, conDetalle = false) {
     cerradoATiempo: c.cerradoATiempo ?? null,
     puedeEnviarEvidencia: H.puedeEnviarEvidencia(permisos(req), c),
     puedeRevisar: H.puedeRevisar(permisos(req), c),
+    puedeCerrarDirecto: H.puedeCerrarDirecto(permisos(req), c),
     puedeEliminar: H.puedeEliminar(permisos(req)),
+    // true si se cerró sin evidencia en la plataforma (verificada por otro medio por la auditora de producto)
+    cierreDirecto: !!c.cierreDirecto,
   };
   if (conDetalle) {
     out.evidencias = c.evidencias || [];
@@ -354,7 +359,7 @@ router.put('/:id/revisar', async (req, res) => {
     const c = await Compromiso.findOne({ _id: oid(req.params.id), visible: true }).lean();
     if (!c) return res.status(404).json({ error: 'Compromiso no encontrado' });
     if (c.estado !== 'en_revision') return res.status(400).json({ error: 'El compromiso no tiene evidencia pendiente de revisión' });
-    if (!H.puedeRevisar(permisos(req), c)) return res.status(403).json({ error: 'Solo quien creó la revisión, gerencia o master pueden validar este compromiso' });
+    if (!H.puedeRevisar(permisos(req), c)) return res.status(403).json({ error: 'Solo quien creó la revisión o la auditoría, gerencia o master pueden validar este compromiso' });
 
     const { decision } = req.body || {};
     const comentario = String((req.body || {}).comentario || '').trim().slice(0, 1000);
@@ -386,6 +391,60 @@ router.put('/:id/revisar', async (req, res) => {
     res.json(serializar(actualizado, req, H.fechaChileStr(), true));
   } catch (error) {
     console.error('Error revisando compromiso:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ────────────────────────────────────────────────────────────
+// PUT /:id/cerrar — la auditora de producto cierra un compromiso de producto que sigue abierto SIN evidencia en la
+// plataforma: la recibió por otro medio (fotos por WhatsApp) o la vio en persona.
+// body: { medio: 'whatsapp' | 'presencial' | 'otro', comentario, fechaEvidencia: 'YYYY-MM-DD' }
+//   · fechaEvidencia = el día en que recibió/vio la evidencia (por defecto hoy). El plazo se mide con esa fecha, así
+//     el administrador no queda "fuera de plazo" porque la auditora la registró después.
+//   · No suma evidencias ni "días de validación": esas métricas solo cuentan lo que pasó por la plataforma.
+// ────────────────────────────────────────────────────────────
+const MEDIOS_CIERRE = ['whatsapp', 'presencial', 'otro'];
+router.put('/:id/cerrar', async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Compromiso no encontrado' });
+    const c = await Compromiso.findOne({ _id: oid(req.params.id), visible: true }).lean();
+    if (!c) return res.status(404).json({ error: 'Compromiso no encontrado' });
+    if (!H.esAuditoraDeProducto(permisos(req), c)) {
+      return res.status(403).json({ error: 'Solo la auditora de producto puede cerrar un compromiso de producto sin evidencia en la plataforma' });
+    }
+    if (c.estado === 'cerrado') return res.status(400).json({ error: 'El compromiso ya está cerrado' });
+    if (c.estado === 'en_revision') return res.status(400).json({ error: 'Ya tiene evidencia en la plataforma: apruébala o pide una corrección' });
+
+    const { medio } = req.body || {};
+    const comentario = String((req.body || {}).comentario || '').trim().slice(0, 1000);
+    if (!MEDIOS_CIERRE.includes(medio)) return res.status(400).json({ error: 'Indica cómo verificaste la evidencia (WhatsApp, en persona u otro)' });
+    if (medio === 'otro' && !comentario) return res.status(400).json({ error: 'Describe cómo verificaste la evidencia' });
+
+    const hoyStr = H.fechaChileStr();
+    const fechaStr = (req.body || {}).fechaEvidencia ? H.normalizarFechaEntrada(String(req.body.fechaEvidencia)) : hoyStr;
+    if (!fechaStr || !H.esFechaValida(fechaStr)) return res.status(400).json({ error: 'La fecha en que recibiste la evidencia no es válida' });
+    if (fechaStr > hoyStr) return res.status(400).json({ error: 'La fecha de la evidencia no puede ser futura' });
+    if (c.fechaRevision && fechaStr < H.fechaChileStr(c.fechaRevision)) {
+      return res.status(400).json({ error: 'La fecha de la evidencia no puede ser anterior a la auditoría' });
+    }
+
+    const usuario = { usuarioId: oid(req.user.id), usuarioNombre: req.user.nombre };
+    const aTiempo = fechaStr <= H.fechaAStr(c.fechaLimite);
+    // Condición de estado: si el administrador subió evidencia justo antes, no se pisa (409).
+    const actualizado = await Compromiso.findOneAndUpdate(
+      { _id: c._id, estado: 'abierto' },
+      {
+        $set: { estado: 'cerrado', fechaCierre: new Date(), cerradoATiempo: aTiempo, cierreDirecto: true },
+        $push: { historial: { ...usuario, accion: 'cerrado_directo', medio, comentario, fechaEvidencia: H.strAFecha(fechaStr), fecha: new Date() } },
+      },
+      { new: true }
+    ).lean();
+    if (!actualizado) return res.status(409).json({ error: 'El compromiso cambió mientras lo cerrabas: recarga la página' });
+
+    console.log('Compromiso cerrado sin evidencia en la plataforma:', c._id.toString(), '| Local:', c.localNombre, '| Por:', req.user.nombre, '| Medio:', medio);
+    res.json(serializar(actualizado, req, hoyStr, true));
+  } catch (error) {
+    console.error('Error cerrando compromiso:', error);
     res.status(500).json({ error: error.message });
   }
 });

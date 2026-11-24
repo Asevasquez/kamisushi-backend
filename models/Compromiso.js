@@ -1,9 +1,9 @@
 // backend/models/Compromiso.js
 //
-// Un compromiso acordado durante una revisión (Servicio al Cliente, Cocina y Generales) o
-// al final de una Auditoría de Producto (sección 'producto', máx. 3). En el segundo caso
-// "revisionId" guarda el _id de la auditoría de producto y "origen" vale 'producto'. Vive en su propia colección — y no dentro de
-// Revision — para que su seguimiento (evidencias, validaciones, historial)
+// Un compromiso acordado durante una revisión (Servicio al Cliente, Cocina y Generales) o al
+// final de una Auditoría de Producto (sección 'producto', máx. 3; en ese caso "revisionId" guarda
+// el _id de la auditoría y "origen" vale 'producto'). Vive en su propia colección — y no dentro de
+// la revisión — para que su seguimiento (evidencias, validaciones, historial)
 // sea independiente de la revisión y se pueda consultar/agregar por local,
 // administrador o supervisora sin cargar revisiones completas.
 //
@@ -23,7 +23,8 @@ const evidenciaSchema = new mongoose.Schema({
 const historialSchema = new mongoose.Schema({
   accion: {
     type: String,
-    enum: ['acordado', 'evidencia_enviada', 'correccion_solicitada', 'aprobado'],
+    // 'cerrado_directo': la auditora de producto lo cerró sin evidencia en la plataforma (la recibió por otro medio o la vio en persona)
+    enum: ['acordado', 'evidencia_enviada', 'correccion_solicitada', 'aprobado', 'cerrado_directo'],
     required: true,
   },
   usuarioId: { type: mongoose.Schema.Types.ObjectId, ref: 'Usuario' },
@@ -33,6 +34,9 @@ const historialSchema = new mongoose.Schema({
   // Solo en 'aprobado' y 'correccion_solicitada': días que tardó la
   // supervisora en revisar desde que llegó la evidencia.
   diasValidacion: { type: Number },
+  // Solo en 'cerrado_directo': cómo se verificó y qué día recibió/vio la evidencia la auditora.
+  medio: { type: String, enum: ['whatsapp', 'presencial', 'otro'] },
+  fechaEvidencia: { type: Date },
 });
 
 const compromisoSchema = new mongoose.Schema({
@@ -71,6 +75,8 @@ const compromisoSchema = new mongoose.Schema({
   // true si la evidencia que se aprobó llegó dentro del plazo. No castiga al
   // administrador por lo que tarde la supervisora en validar.
   cerradoATiempo: { type: Boolean },
+  // true si la auditora de producto lo cerró sin que hubiera evidencia en la plataforma.
+  cierreDirecto: { type: Boolean, default: false },
 }, { timestamps: true });
 
 compromisoSchema.index({ revisionId: 1, clientId: 1 }, { unique: true });
